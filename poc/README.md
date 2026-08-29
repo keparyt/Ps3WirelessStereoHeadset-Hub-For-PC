@@ -1,68 +1,121 @@
 # PS3 Wireless Stereo Headset HID PoC
 
-This PoC is for investigating the HID traffic exposed by the Sony PS3 Wireless Stereo Headset USB dongle on Windows.
+This PoC investigates the HID traffic exposed by the Sony PS3 Wireless Stereo Headset USB dongle on Windows.
 
-## Target device
+## Known device
 
-The normal capture mode targets:
+The normal target is:
 
 - VID: `12BA`
 - PID: `0035`
 - Manufacturer: Sony Interactive Entertainment
 - Product: Wireless Stereo Headset
 
-The dongle exposes multiple HID collections. In particular, vendor-defined usage pages such as `FF00`, `FF01`, and `FF03` are useful candidates for headset-specific telemetry or controls. The tool does **not** assume what any byte means yet; it records raw evidence first.
+The receiver exposes multiple HID collections, including vendor-defined usage pages. The project also contains a live Windows panel that decodes the known `0xB0` status packet used by this headset family.
 
-## What the PoC does
+## Live status panel
 
-```text
-USB dongle
-    │
-    ├── Consumer Control (0x000C)
-    ├── Vendor collection (0xFF00)
-    ├── Vendor collection (0xFF03)
-    └── Vendor collection (0xFF01)
-             │
-             ▼
-     Passive HID readers
-             │
-       ┌─────┴─────┐
-       ▼           ▼
-   console      JSONL logs
-```
-
-Each capture session:
-
-1. Finds all HID collections belonging to `12BA:0035`.
-2. Dumps the HID Report Descriptor for every collection.
-3. Creates one passive reader thread per HID collection.
-4. Records **every input report** with UTC timestamps.
-5. Prints only changed reports to the console for easier live analysis.
-6. Lets you add timestamped action markers for correlation.
-7. Writes a summary containing report counts, byte totals, errors, and report-length distributions.
-
-No HID output reports are sent. No feature reports are written. The PoC is intentionally passive/read-only.
-
-## Run
-
-From the repository root:
+Run:
 
 ```powershell
-python -m pip install -r requirements.txt
+python poc/ps3_headset_panel.py
+```
+
+The panel displays the requested live state at startup and continuously updates it:
+
+```text
+┌──────────────────────┬──────────────────────┐
+│ Dongle               │ Headset Link         │
+│ ON / OFF             │ ON / OFF / UNKNOWN   │
+├──────────────────────┼──────────────────────┤
+│ Headset Power        │ VSS                  │
+│ ON / OFF / UNKNOWN   │ ON / OFF / UNKNOWN   │
+├──────────────────────┼──────────────────────┤
+│ Microphone           │ Battery              │
+│ ON / MUTED / UNKNOWN │ xx% / CHARGING       │
+└──────────────────────┴──────────────────────┘
+```
+
+It also shows:
+
+- headset model/family flag
+- number of received `0xB0` status reports (`Status pings`)
+- age of the last `0xB0` report
+- last raw `0xB0` packet
+- whether the current status is live or stale
+- an explicit note that headset volume percentage is not decoded from the known status packet
+
+### `0xB0` status format
+
+The panel follows the public Linux HID driver for PlayStation wireless headsets:
+
+```text
+byte 0       0xB0                    status report ID
+byte 1-2     device-specific          not decoded by this panel
+byte 3       battery level            percentage-like value
+byte 4       flags
+
+byte 4 bit 0     VSS enabled
+byte 4 bit 1     microphone mute enabled
+byte 4 bit 3     headset/device link connected
+byte 4 bits 6-7  family/model flag
+```
+
+The reference driver identifies `12BA:0035` as the Gold receiver and uses the `0xB0` packet to expose battery and connection information. citeturn10file0
+
+A battery value of `0x80` is shown as `CHARGING` with no percentage because that value is treated specially by the reference implementation. citeturn10file0
+
+### Headset power vs. link state
+
+The known `0xB0` packet exposes a headset/device link flag, not a separately decoded power bit. Therefore the panel shows **Headset Power = ON** when a live status report says the headset is connected, and **OFF** when that live link flag is clear. When reports stop arriving, the panel changes the value to `UNKNOWN` rather than pretending it knows the exact hardware power state.
+
+This keeps the UI useful while avoiding a false claim about a field that has not been independently decoded.
+
+### Battery pings
+
+The panel does not transmit a guessed battery command. It counts incoming `0xB0` status reports as `Status pings` and shows the age of the last one.
+
+That gives a useful live diagnostic:
+
+```text
+Status pings (B0): 1532
+Last B0 report: 0.2s ago
+Battery: 84%
+```
+
+If the receiver stops producing status reports, the panel marks telemetry as stale.
+
+## Volume
+
+The known `0xB0` status packet does not provide a decoded absolute headset-volume field in this PoC. The panel therefore displays:
+
+```text
+Headset volume telemetry: not decoded
+```
+
+It does not guess a percentage from unrelated HID activity. The passive analyzer can still capture Consumer Control/other HID reports for future investigation.
+
+## Passive HID analyzer
+
+For full reverse-engineering captures:
+
+```powershell
 python poc/ps3_headset_hid_monitor.py
 ```
 
-The script will automatically select the known `12BA:0035` device and all of its HID collections.
+The analyzer:
 
-To inspect every HID device instead:
+1. Finds all HID collections for `12BA:0035`.
+2. Dumps each HID report descriptor.
+3. Starts one passive reader per HID collection.
+4. Stores every input report in JSONL.
+5. Prints changed reports live.
+6. Allows timestamped action markers for correlation.
+7. Writes per-collection statistics.
 
-```powershell
-python poc/ps3_headset_hid_monitor.py --all-hid
-```
+Capture output is saved under `poc/logs/<timestamp>/`.
 
-## Action correlation
-
-While the capture is running, use the prompt to create markers immediately before or after a physical headset action:
+Example markers:
 
 ```text
 capture> idle
@@ -72,12 +125,12 @@ capture> vol+
 capture> vol-
 capture> power
 capture> battery
-capture> mark headset is connected
+capture> mark headset connected
 ```
 
-These are **human annotations**, not decoded device state.
+These markers are human annotations; they are not decoded device states.
 
-A good first test sequence is:
+## Recommended test sequence
 
 ```text
 idle
@@ -85,11 +138,9 @@ wait 5-10 seconds
 vss
 press VSS
 wait 2 seconds
-vss
 mute
 press microphone mute
 wait 2 seconds
-mute
 vol+
 press volume up
 vol-
@@ -98,7 +149,7 @@ battery
 continue observing without touching anything
 ```
 
-Repeat each experiment individually where possible so report changes can be correlated with a single physical action.
+The live panel is useful for confirming the already-known fields immediately; the passive analyzer is useful for discovering additional fields and volume behavior.
 
 ## Capture files
 
@@ -117,46 +168,16 @@ poc/logs/
     └── collection_03_page_FF01_usage_0020_descriptor.txt
 ```
 
-### `capture.jsonl`
+## Read-only behavior
 
-Contains every input report, for example:
+The live panel and analyzer only consume HID input data. They do not send HID output reports or feature writes. Battery percentage comes from the incoming `0xB0` status telemetry rather than from a guessed command.
 
-```json
-{"timestamp":"2026-08-29T18:00:00.123+00:00","type":"input_report","collection":1,"usage_page":65280,"usage":1,"report_length":8,"hex":"01 00 00 00 00 00 00 00","changed_from_previous":true}
+## Install
+
+From the repository root:
+
+```powershell
+python -m pip install -r requirements.txt
 ```
 
-### `events.jsonl`
-
-Contains your manual action markers and their timestamps.
-
-### Descriptor files
-
-Each collection gets both the raw descriptor and a compact decoded summary. The decoded summary is only structural information (usage pages, report IDs, report sizes/counts, input/output/feature items, etc.). It does not claim that a particular byte is battery, VSS, mute, or another headset state.
-
-## Reverse-engineering workflow
-
-Use the capture data to identify correlations:
-
-```text
-Physical action
-      │
-      ▼
-Action marker timestamp
-      │
-      ├───────────────┐
-      ▼               ▼
-Collection FF00    Collection FF03    Collection FF01
-      │               │               │
-      └───────────────┼───────────────┘
-                      ▼
-               changed reports
-                      │
-                      ▼
-              candidate state bits
-```
-
-Do not label a byte as `battery`, `VSS`, or `mute` until repeated captures show that the same field changes consistently with the corresponding action and does not change for unrelated actions.
-
-## Important limitation
-
-A HID collection being present does **not** prove that it contains battery or headset telemetry. This PoC establishes whether useful data is actually being transmitted and gives us the raw evidence needed to decode it safely.
+Only `hidapi` is required; the panel uses Python's built-in Tkinter GUI toolkit.

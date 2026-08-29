@@ -1,183 +1,179 @@
 # PS3 Wireless Stereo Headset HID PoC
 
-This PoC investigates the HID traffic exposed by the Sony PS3 Wireless Stereo Headset USB dongle on Windows.
+This project is a **receive/observability PoC** for investigating what the Sony PS3 Wireless Stereo Headset USB receiver exposes to a Windows PC.
 
-## Known device
+The purpose is to discover and display incoming headset telemetry. It is **not a controller application**.
 
-The normal target is:
+## Receive-only design
+
+The PoC does not attempt to change headset settings.
+
+```text
+PS3 Wireless Headset
+        │
+        │ wireless
+        ▼
+   Sony USB receiver
+        │
+        │ HID input reports
+        ▼
+┌─────────────────────────┐
+│ PC receive-only monitor │
+└────────────┬────────────┘
+             │
+     ┌───────┼────────┐
+     ▼       ▼        ▼
+ decoded   raw      statistics
+ status    reports   / discovery
+```
+
+The tools:
+
+- discover the receiver and its HID collections,
+- receive HID input reports,
+- decode only fields that have an identified protocol mapping,
+- show unknown data as raw bytes for further investigation,
+- record receive statistics and timestamps.
+
+They do **not** send HID output reports, feature reports, control commands, or battery polling commands.
+
+## Target device
+
+Normal mode targets:
 
 - VID: `12BA`
 - PID: `0035`
 - Manufacturer: Sony Interactive Entertainment
 - Product: Wireless Stereo Headset
 
-The receiver exposes multiple HID collections, including vendor-defined usage pages. The project also contains a live Windows panel that decodes the known `0xB0` status packet used by this headset family.
+The receiver exposes multiple HID collections, including vendor-defined usage pages such as `FF00`, `FF01`, and `FF03`.
 
-## Live status panel
+## Live receive panel
 
-Run:
+Run from the repository root:
 
 ```powershell
+python -m pip install -r requirements.txt
 python poc/ps3_headset_panel.py
 ```
 
-The panel displays the requested live state at startup and continuously updates it:
+The panel is intentionally passive and has no control actions.
+
+It displays:
 
 ```text
-┌──────────────────────┬──────────────────────┐
-│ Dongle               │ Headset Link         │
-│ ON / OFF             │ ON / OFF / UNKNOWN   │
-├──────────────────────┼──────────────────────┤
-│ Headset Power        │ VSS                  │
-│ ON / OFF / UNKNOWN   │ ON / OFF / UNKNOWN   │
-├──────────────────────┼──────────────────────┤
-│ Microphone           │ Battery              │
-│ ON / MUTED / UNKNOWN │ xx% / CHARGING       │
-└──────────────────────┴──────────────────────┘
-```
+┌────────────────┬────────────────┬────────────────┐
+│ USB Dongle     │ Headset Link   │ Headset Power  │
+│ ON / OFF       │ ON/OFF/UNKNOWN │ ON/OFF/UNKNOWN │
+├────────────────┼────────────────┼────────────────┤
+│ VSS            │ Microphone     │ Battery        │
+│ ON/OFF/UNKNOWN │ ON/MUTED/UNK   │ xx%/CHARGING   │
+└────────────────┴────────────────┴────────────────┘
 
-It also shows:
-
-- headset model/family flag
-- number of received `0xB0` status reports (`Status pings`)
-- age of the last `0xB0` report
-- last raw `0xB0` packet
-- whether the current status is live or stale
-- an explicit note that headset volume percentage is not decoded from the known status packet
-
-### `0xB0` status format
-
-The panel follows the public Linux HID driver for PlayStation wireless headsets:
-
-```text
-byte 0       0xB0                    status report ID
-byte 1-2     device-specific          not decoded by this panel
-byte 3       battery level            percentage-like value
-byte 4       flags
-
-byte 4 bit 0     VSS enabled
-byte 4 bit 1     microphone mute enabled
-byte 4 bit 3     headset/device link connected
-byte 4 bits 6-7  family/model flag
-```
-
-The reference driver identifies `12BA:0035` as the Gold receiver and uses the `0xB0` packet to expose battery and connection information. citeturn10file0
-
-A battery value of `0x80` is shown as `CHARGING` with no percentage because that value is treated specially by the reference implementation. citeturn10file0
-
-### Headset power vs. link state
-
-The known `0xB0` packet exposes a headset/device link flag, not a separately decoded power bit. Therefore the panel shows **Headset Power = ON** when a live status report says the headset is connected, and **OFF** when that live link flag is clear. When reports stop arriving, the panel changes the value to `UNKNOWN` rather than pretending it knows the exact hardware power state.
-
-This keeps the UI useful while avoiding a false claim about a field that has not been independently decoded.
-
-### Battery pings
-
-The panel does not transmit a guessed battery command. It counts incoming `0xB0` status reports as `Status pings` and shows the age of the last one.
-
-That gives a useful live diagnostic:
-
-```text
-Status pings (B0): 1532
+B0 status packets: 1234
+Total HID input reports: 4567
 Last B0 report: 0.2s ago
-Battery: 84%
 ```
 
-If the receiver stops producing status reports, the panel marks telemetry as stale.
+It also shows the individual incoming HID collections, report counters, last received packet, and a live raw report stream. This is important because the main goal is discovering **what the receiver sends**, not controlling the headset.
 
-## Volume
+## Known incoming `0xB0` status report
 
-The known `0xB0` status packet does not provide a decoded absolute headset-volume field in this PoC. The panel therefore displays:
+For `12BA:0035`, the current decoder follows the public Linux HID driver reference for this headset family.
 
 ```text
-Headset volume telemetry: not decoded
+byte 0     0xB0                    status report ID
+byte 1-2   device-specific          not decoded here
+byte 3     battery level            percentage-like value
+byte 4     flags
+
+byte 4 bit 0 = VSS enabled
+byte 4 bit 1 = microphone mute enabled
+byte 4 bit 3 = headset/device link connected
+byte 4 bits 6-7 = headset family/model flag
 ```
 
-It does not guess a percentage from unrelated HID activity. The passive analyzer can still capture Consumer Control/other HID reports for future investigation.
+The special battery value `0x80` is displayed as `CHARGING` / `level unavailable` rather than as `128%`.
+
+The panel derives **Headset Power** from the live headset-link flag. This is intentionally shown as a derived state because the known `0xB0` packet does not provide a separately verified power-on bit in this PoC.
+
+## What we can receive
+
+The UI separates **confirmed decoded telemetry** from **raw observed telemetry**:
+
+| Data | Current status |
+|---|---|
+| USB receiver connected | ✅ Detected from HID enumeration |
+| Headset wireless link | ✅ Decoded from B0 bit 3 |
+| VSS | ✅ Decoded from B0 bit 0 |
+| Microphone mute | ✅ Decoded from B0 bit 1 |
+| Battery percentage | ✅ Decoded from B0 byte 3 |
+| Charging indication | ✅ `0x80` special state |
+| Headset family/model | ✅ Decoded from B0 bits 6-7 |
+| Volume percentage | ❓ Not decoded yet |
+| Other vendor telemetry | 🔎 Raw reports exposed for discovery |
+
+The unknown states are deliberate. The application does not guess the meaning of unrelated bytes just because they change.
+
+## Battery receive / ping behavior
+
+The panel counts incoming `0xB0` reports as **status packets**. This provides a live indication that the receiver is transmitting status telemetry.
+
+No special battery request is sent by the application. The battery display therefore represents what the receiver spontaneously provides through incoming status reports.
 
 ## Passive HID analyzer
 
-For full reverse-engineering captures:
+For deeper reverse-engineering, run:
 
 ```powershell
 python poc/ps3_headset_hid_monitor.py
 ```
 
-The analyzer:
+This analyzer:
 
 1. Finds all HID collections for `12BA:0035`.
-2. Dumps each HID report descriptor.
+2. Dumps every HID report descriptor.
 3. Starts one passive reader per HID collection.
-4. Stores every input report in JSONL.
+4. Stores every incoming report in JSONL.
 5. Prints changed reports live.
-6. Allows timestamped action markers for correlation.
-7. Writes per-collection statistics.
+6. Allows human action markers for correlation.
+7. Produces receive statistics.
 
-Capture output is saved under `poc/logs/<timestamp>/`.
-
-Example markers:
+Capture output is saved under:
 
 ```text
-capture> idle
-capture> vss
-capture> mute
-capture> vol+
-capture> vol-
-capture> power
-capture> battery
-capture> mark headset connected
+poc/logs/<timestamp>/
 ```
 
-These markers are human annotations; they are not decoded device states.
+## Discovery workflow
 
-## Recommended test sequence
+The best way to find more telemetry is to watch the raw input stream while performing one physical action at a time:
 
 ```text
-idle
-wait 5-10 seconds
-vss
-press VSS
-wait 2 seconds
-mute
-press microphone mute
-wait 2 seconds
-vol+
-press volume up
-vol-
-press volume down
-battery
-continue observing without touching anything
+Idle baseline
+     │
+     ├── press VSS ─────────► compare incoming bytes
+     │
+     ├── mute/unmute ───────► compare incoming bytes
+     │
+     ├── volume +/- ────────► compare incoming bytes
+     │
+     ├── power on/off ──────► compare incoming bytes
+     │
+     └── leave idle ────────► compare periodic reports
 ```
 
-The live panel is useful for confirming the already-known fields immediately; the passive analyzer is useful for discovering additional fields and volume behavior.
+The physical actions are performed on the headset itself; the software only observes the resulting incoming HID traffic.
 
-## Capture files
-
-Sessions are stored under `poc/logs/<timestamp>/` by default:
+## Read-only protocol behavior
 
 ```text
-poc/logs/
-└── 20260829_150000/
-    ├── session.json
-    ├── capture.jsonl
-    ├── events.jsonl
-    ├── summary.json
-    ├── collection_00_page_000C_usage_0001_descriptor.txt
-    ├── collection_01_page_FF00_usage_0001_descriptor.txt
-    ├── collection_02_page_FF03_usage_0020_descriptor.txt
-    └── collection_03_page_FF01_usage_0020_descriptor.txt
+HID device ───────► Python application
+
+No HID report is sent back.
+No feature report is written.
+No control transfer is issued by the PoC.
+No guessed battery request is transmitted.
 ```
 
-## Read-only behavior
-
-The live panel and analyzer only consume HID input data. They do not send HID output reports or feature writes. Battery percentage comes from the incoming `0xB0` status telemetry rather than from a guessed command.
-
-## Install
-
-From the repository root:
-
-```powershell
-python -m pip install -r requirements.txt
-```
-
-Only `hidapi` is required; the panel uses Python's built-in Tkinter GUI toolkit.
+This makes the project focused on answering one question: **what data can the PS3 Wireless Stereo Headset receiver actually provide to the PC?**

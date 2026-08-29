@@ -1,19 +1,29 @@
 #!/usr/bin/env python3
-"""Live Windows panel for the Sony PS3 Wireless Stereo Headset receiver.
+"""Live receive-only panel for the Sony PS3 Wireless Stereo Headset receiver.
 
-This panel is intentionally read-only. It listens to HID input reports from
-Sony VID 0x12BA / PID 0x0035 and decodes the known 0xB0 status report:
+This application is an observation tool, not a controller.
 
+It ONLY:
+- discovers the Sony USB receiver (VID 0x12BA / PID 0x0035),
+- opens its HID collections read-only,
+- receives input reports,
+- decodes the known 0xB0 status packet,
+- shows raw incoming packets and per-collection receive statistics.
+
+It NEVER sends HID output reports, feature reports, control commands, or
+battery polling commands.
+
+Known 0xB0 status packet fields used by this PoC:
     byte 0 == 0xB0
-    byte 3 = battery level (0x80 is treated as charging/unknown)
+    byte 3 = battery level (0x80 is treated as charging/level unavailable)
     byte 4 bit 0 = VSS enabled
     byte 4 bit 1 = microphone mute enabled
-    byte 4 bit 3 = headset/receiver link connected
-    byte 4 bits 6-7 = device family flag (01 = Gold in the reference driver)
+    byte 4 bit 3 = headset/device link connected
+    byte 4 bits 6-7 = device family flag
 
-The reference driver this implementation follows is the Linux
-hid-playstation-headset driver by counter185. This project does not send
-output reports or feature writes.
+The panel deliberately labels headset power as DERIVED from the live link
+flag because the known packet does not provide a separate independently
+verified power-on bit.
 
 Install from repository root:
     python -m pip install -r requirements.txt
@@ -24,12 +34,11 @@ Run:
 
 from __future__ import annotations
 
-import sys
 import threading
 import time
-from dataclasses import dataclass
-from datetime import datetime
 import tkinter as tk
+from dataclasses import dataclass, field
+from datetime import datetime
 from tkinter import ttk
 
 try:
@@ -47,11 +56,24 @@ STATUS_MIN_LEN = 5
 STALE_AFTER_SECONDS = 4.0
 SCAN_INTERVAL_SECONDS = 1.0
 POLL_INTERVAL_SECONDS = 0.01
+MAX_RECEIVE_LOG_LINES = 250
 
 VSS_MASK = 0x01
 MIC_MUTE_MASK = 0x02
 CONNECTED_MASK = 0x08
 MODEL_MASK = 0xC0
+
+
+@dataclass
+class CollectionStats:
+    usage_page: int = 0
+    usage: int = 0
+    interface: int | None = None
+    reports: int = 0
+    bytes_received: int = 0
+    last_hex: str = ""
+    last_time: float | None = None
+    errors: int = 0
 
 
 @dataclass
@@ -64,11 +86,45 @@ class HeadsetState:
     charging: bool = False
     model: str = "Unknown"
     status_reports: int = 0
+    total_reports: int = 0
+    total_bytes: int = 0
     last_status_time: float | None = None
     last_status_hex: str = ""
     last_error: str = ""
+    collections: dict[str, CollectionStats] = field(default_factory=dict)
+    receive_log: list[str] = field(default_factory=list)
 
-    def update_from_status(self, report: bytes) -> None:
+    def update_from_report(
+        self,
+        report: bytes,
+        collection_key: str,
+        usage_page: int,
+        usage: int,
+        interface: int | None,
+    ) -> None:
+        now = time.monotonic()
+        collection = self.collections.setdefault(
+            collection_key,
+            CollectionStats(
+                usage_page=usage_page,
+                usage=usage,
+                interface=interface,
+            ),
+        )
+        collection.reports += 1
+        collection.bytes_received += len(report)
+        collection.last_hex = " ".join(f"{b:02X}" for b in report)
+        collection.last_time = now
+
+        self.total_reports += 1
+        self.total_bytes += len(report)
+        self.receive_log.append(
+            f"{datetime.now().strftime('%H:%M:%S.%f')[:-3]}  "
+            f"{collection_key:<18}  LEN={len(report):03d}  {collection.last_hex}"
+        )
+        if len(self.receive_log) > MAX_RECEIVE_LOG_LINES:
+            del self.receive_log[:-MAX_RECEIVE_LOG_LINES]
+
         if len(report) < STATUS_MIN_LEN or report[0] != STATUS_REPORT_ID:
             return
 
@@ -79,7 +135,7 @@ class HeadsetState:
         self.vss_enabled = bool(flags & VSS_MASK)
         self.mic_muted = bool(flags & MIC_MUTE_MASK)
         self.status_reports += 1
-        self.last_status_time = time.monotonic()
+        self.last_status_time = now
         self.last_status_hex = " ".join(f"{b:02X}" for b in report)
 
         model_flags = (flags & MODEL_MASK) >> 6
@@ -90,14 +146,12 @@ class HeadsetState:
         else:
             self.model = "Sony headset (family flag 00)"
 
-        # The known reference driver treats 0x80 as a special charging state.
+        # In the known Linux reference driver, 0x80 is the special state.
         if level == 0x80:
             self.charging = True
             self.battery_percent = None
         else:
             self.charging = False
-            # The known device reports the battery as a percentage-like byte.
-            # Clamp only to keep the UI sane if a malformed report is received.
             self.battery_percent = max(0, min(100, level))
 
 
@@ -115,6 +169,13 @@ class HeadsetMonitor:
             return path.decode("utf-8", errors="replace")
         return str(path)
 
+    @staticmethod
+    def collection_key(device_info: dict) -> str:
+        page = int(device_info.get("usage_page") or 0)
+        usage = int(device_info.get("usage") or 0)
+        interface = device_info.get("interface_number")
+        return f"IF{interface if interface is not None else '-'} FF{page:04X} U{usage:04X}"
+
     def discover(self) -> list[dict]:
         devices = hid.enumerate(VID, PID)
         with self.lock:
@@ -126,22 +187,49 @@ class HeadsetMonitor:
         if not path:
             return
 
+        key = self.collection_key(device_info)
+        page = int(device_info.get("usage_page") or 0)
+        usage = int(device_info.get("usage") or 0)
+        interface = device_info.get("interface_number")
         device = hid.device()
+
         try:
             device.open_path(path)
             device.set_nonblocking(True)
 
             while not self.stop_event.is_set():
-                reports = device.read(512)
+                try:
+                    reports = device.read(512)
+                except Exception as exc:
+                    with self.lock:
+                        collection = self.state.collections.setdefault(
+                            key,
+                            CollectionStats(
+                                usage_page=page,
+                                usage=usage,
+                                interface=interface,
+                            ),
+                        )
+                        collection.errors += 1
+                        self.state.last_error = f"{key}: {exc}"
+                    time.sleep(0.25)
+                    continue
+
                 if reports:
                     report = bytes(reports)
-                    if len(report) >= STATUS_MIN_LEN and report[0] == STATUS_REPORT_ID:
-                        with self.lock:
-                            self.state.update_from_status(report)
+                    with self.lock:
+                        self.state.update_from_report(
+                            report,
+                            key,
+                            page,
+                            usage,
+                            interface,
+                        )
+
                 time.sleep(POLL_INTERVAL_SECONDS)
         except Exception as exc:
             with self.lock:
-                self.state.last_error = str(exc)
+                self.state.last_error = f"{key}: {exc}"
         finally:
             try:
                 device.close()
@@ -154,15 +242,13 @@ class HeadsetMonitor:
 
         for device in devices:
             path_key = self.path_key(device.get("path"))
-            if not path_key:
-                continue
-            if path_key in self.paths:
+            if not path_key or path_key in self.paths:
                 continue
 
             thread = threading.Thread(
                 target=self.worker,
                 args=(device,),
-                name="ps3-hid-reader",
+                name=f"ps3-hid-reader-{len(self.threads)}",
                 daemon=True,
             )
             thread.start()
@@ -171,21 +257,23 @@ class HeadsetMonitor:
         self.paths.update(new_paths)
         self.paths.intersection_update(new_paths)
 
-        # If the dongle disappears, clear live transport status. Keep the last
-        # decoded values visible only until the UI marks them stale.
         if not devices:
             with self.lock:
-                self.state.headset_connected = False
+                self.state.headset_connected = None
+                self.state.vss_enabled = None
+                self.state.mic_muted = None
+                self.state.battery_percent = None
+                self.state.charging = False
                 self.state.last_status_time = None
 
 
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("PS3 Wireless Stereo Headset Hub")
-        self.geometry("680x560")
-        self.minsize(620, 500)
-        self.configure(padx=18, pady=18)
+        self.title("PS3 Wireless Stereo Headset — Receive Monitor")
+        self.geometry("920x760")
+        self.minsize(820, 650)
+        self.configure(padx=16, pady=16)
 
         self.monitor = HeadsetMonitor()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -201,26 +289,33 @@ class App(tk.Tk):
         except tk.TclError:
             pass
 
-        title = ttk.Label(
+        ttk.Label(
             self,
             text="PS3 Wireless Stereo Headset",
             font=("Segoe UI", 20, "bold"),
-        )
-        title.pack(anchor="w")
+        ).pack(anchor="w")
 
-        subtitle = ttk.Label(
+        ttk.Label(
             self,
-            text="Sony USB receiver • read-only HID telemetry",
+            text="Receive-only HID telemetry monitor • no headset control",
             font=("Segoe UI", 10),
-        )
-        subtitle.pack(anchor="w", pady=(0, 16))
+        ).pack(anchor="w", pady=(0, 12))
+
+        notice = ttk.LabelFrame(self, text="Mode", padding=10)
+        notice.pack(fill="x", pady=(0, 10))
+        ttk.Label(
+            notice,
+            text="READ ONLY — this application opens HID input paths and receives data only. "
+                 "It sends no output reports, feature reports, or polling commands.",
+            wraplength=850,
+        ).pack(anchor="w")
 
         self.cards = ttk.Frame(self)
         self.cards.pack(fill="x")
-
         self.card_labels: dict[str, tuple[ttk.Label, ttk.Label]] = {}
+
         cards = [
-            ("Dongle", "dongle"),
+            ("USB Dongle", "dongle"),
             ("Headset Link", "connected"),
             ("Headset Power", "power"),
             ("VSS", "vss"),
@@ -229,40 +324,90 @@ class App(tk.Tk):
         ]
 
         for row, (caption, key) in enumerate(cards):
-            frame = ttk.LabelFrame(self.cards, text=caption, padding=12)
-            frame.grid(row=row // 2, column=row % 2, sticky="nsew", padx=5, pady=5)
-            self.cards.columnconfigure(0, weight=1)
-            self.cards.columnconfigure(1, weight=1)
-
-            value = ttk.Label(frame, text="UNKNOWN", font=("Segoe UI", 17, "bold"))
+            frame = ttk.LabelFrame(self.cards, text=caption, padding=10)
+            frame.grid(row=row // 3, column=row % 3, sticky="nsew", padx=4, pady=4)
+            value = ttk.Label(frame, text="UNKNOWN", font=("Segoe UI", 16, "bold"))
             value.pack(anchor="w")
-            detail = ttk.Label(frame, text="Waiting for telemetry…")
-            detail.pack(anchor="w", pady=(4, 0))
+            detail = ttk.Label(frame, text="Waiting for incoming telemetry…")
+            detail.pack(anchor="w", pady=(3, 0))
             self.card_labels[key] = (value, detail)
 
-        info = ttk.LabelFrame(self, text="Telemetry", padding=12)
-        info.pack(fill="both", expand=True, pady=(12, 0))
+        for column in range(3):
+            self.cards.columnconfigure(column, weight=1)
+
+        telemetry = ttk.LabelFrame(self, text="Receive statistics", padding=10)
+        telemetry.pack(fill="x", pady=(10, 8))
 
         self.model_var = tk.StringVar(value="Model: Unknown")
-        self.ping_var = tk.StringVar(value="Status pings: 0")
+        self.ping_var = tk.StringVar(value="B0 status packets: 0")
+        self.total_var = tk.StringVar(value="Total HID input reports: 0 (0 bytes)")
         self.age_var = tk.StringVar(value="Last B0 report: —")
         self.raw_var = tk.StringVar(value="Last B0: —")
-        self.volume_var = tk.StringVar(value="Headset volume telemetry: not reported by the decoded B0 status packet")
-        self.error_var = tk.StringVar(value="")
+        self.volume_var = tk.StringVar(
+            value="Volume: not decoded from the known B0 status packet"
+        )
 
-        for var in (self.model_var, self.ping_var, self.age_var, self.raw_var, self.volume_var):
-            ttk.Label(info, textvariable=var, wraplength=610).pack(anchor="w", pady=3)
+        for var in (
+            self.model_var,
+            self.ping_var,
+            self.total_var,
+            self.age_var,
+            self.raw_var,
+            self.volume_var,
+        ):
+            ttk.Label(telemetry, textvariable=var, wraplength=850).pack(anchor="w", pady=2)
 
-        self.error_label = ttk.Label(info, textvariable=self.error_var, wraplength=610)
-        self.error_label.pack(anchor="w", pady=(8, 0))
+        collections_frame = ttk.LabelFrame(self, text="Incoming HID collections", padding=8)
+        collections_frame.pack(fill="x", pady=(0, 8))
 
-        footer = ttk.Frame(self)
-        footer.pack(fill="x", pady=(12, 0))
-        ttk.Label(
-            footer,
-            text="Battery is read from incoming 0xB0 status reports; no polling/write command is sent.",
-            wraplength=610,
-        ).pack(anchor="w")
+        columns = ("collection", "reports", "bytes", "last")
+        self.collection_tree = ttk.Treeview(
+            collections_frame,
+            columns=columns,
+            show="headings",
+            height=5,
+        )
+        headings = {
+            "collection": "Collection",
+            "reports": "Reports",
+            "bytes": "Bytes",
+            "last": "Last received report",
+        }
+        widths = {"collection": 180, "reports": 90, "bytes": 100, "last": 500}
+        for column in columns:
+            self.collection_tree.heading(column, text=headings[column])
+            self.collection_tree.column(column, width=widths[column], anchor="w")
+        self.collection_tree.pack(fill="x")
+
+        raw_frame = ttk.LabelFrame(self, text="Raw incoming report stream", padding=8)
+        raw_frame.pack(fill="both", expand=True)
+
+        text_frame = ttk.Frame(raw_frame)
+        text_frame.pack(fill="both", expand=True)
+        self.raw_text = tk.Text(
+            text_frame,
+            height=12,
+            wrap="none",
+            font=("Consolas", 9),
+            state="disabled",
+        )
+        scrollbar_y = ttk.Scrollbar(text_frame, orient="vertical", command=self.raw_text.yview)
+        scrollbar_x = ttk.Scrollbar(text_frame, orient="horizontal", command=self.raw_text.xview)
+        self.raw_text.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
+        self.raw_text.grid(row=0, column=0, sticky="nsew")
+        scrollbar_y.grid(row=0, column=1, sticky="ns")
+        scrollbar_x.grid(row=1, column=0, sticky="ew")
+        text_frame.rowconfigure(0, weight=1)
+        text_frame.columnconfigure(0, weight=1)
+
+        footer = ttk.Label(
+            self,
+            text="The panel shows what the receiver sends spontaneously. Unknown reports remain raw so they can be analyzed later.",
+            wraplength=850,
+        )
+        footer.pack(anchor="w", pady=(8, 0))
+
+        self.last_log_length = 0
 
     @staticmethod
     def age_text(last_time: float | None) -> str:
@@ -286,9 +431,59 @@ class App(tk.Tk):
                 self.monitor.state.last_error = str(exc)
         self.after(int(SCAN_INTERVAL_SECONDS * 1000), self.refresh_connection)
 
+    def refresh_collection_table(self, snapshot: HeadsetState) -> None:
+        existing = set(self.collection_tree.get_children())
+        used: set[str] = set()
+
+        for key, info in sorted(snapshot.collections.items()):
+            values = (
+                key,
+                info.reports,
+                info.bytes_received,
+                info.last_hex or "—",
+            )
+            iid = key
+            if iid in existing:
+                self.collection_tree.item(iid, values=values)
+            else:
+                try:
+                    self.collection_tree.insert("", "end", iid=iid, values=values)
+                except tk.TclError:
+                    safe_iid = f"row{len(existing) + len(used)}"
+                    self.collection_tree.insert("", "end", iid=safe_iid, values=values)
+                    iid = safe_iid
+            used.add(iid)
+
+    def refresh_raw_log(self, snapshot: HeadsetState) -> None:
+        log = snapshot.receive_log
+        if len(log) == self.last_log_length:
+            return
+        self.last_log_length = len(log)
+        self.raw_text.configure(state="normal")
+        self.raw_text.delete("1.0", "end")
+        self.raw_text.insert("1.0", "\n".join(log))
+        self.raw_text.see("end")
+        self.raw_text.configure(state="disabled")
+
     def refresh_ui(self) -> None:
         with self.monitor.lock:
-            snapshot = HeadsetState(**vars(self.monitor.state))
+            snapshot = HeadsetState(
+                dongle_present=self.monitor.state.dongle_present,
+                headset_connected=self.monitor.state.headset_connected,
+                vss_enabled=self.monitor.state.vss_enabled,
+                mic_muted=self.monitor.state.mic_muted,
+                battery_percent=self.monitor.state.battery_percent,
+                charging=self.monitor.state.charging,
+                model=self.monitor.state.model,
+                status_reports=self.monitor.state.status_reports,
+                total_reports=self.monitor.state.total_reports,
+                total_bytes=self.monitor.state.total_bytes,
+                last_status_time=self.monitor.state.last_status_time,
+                last_status_hex=self.monitor.state.last_status_hex,
+                last_error=self.monitor.state.last_error,
+                collections={k: CollectionStats(**vars(v)) for k, v in self.monitor.state.collections.items()},
+                receive_log=list(self.monitor.state.receive_log),
+            )
 
         stale = (
             snapshot.last_status_time is None
@@ -301,65 +496,57 @@ class App(tk.Tk):
             self.set_card("dongle", "OFF", "USB receiver not detected")
 
         if not snapshot.dongle_present:
-            self.set_card("connected", "OFF", "Receiver not connected")
-            self.set_card("power", "OFF", "No live headset status")
-            self.set_card("vss", "UNKNOWN", "No live status report")
-            self.set_card("mic", "UNKNOWN", "No live status report")
+            self.set_card("connected", "UNKNOWN", "No receiver present")
+            self.set_card("power", "UNKNOWN", "No receiver present")
+            self.set_card("vss", "UNKNOWN", "No incoming status")
+            self.set_card("mic", "UNKNOWN", "No incoming status")
             self.set_card("battery", "UNKNOWN", "No receiver telemetry")
         elif stale:
-            self.set_card("connected", "UNKNOWN", "Status report is stale")
-            self.set_card("power", "UNKNOWN", "Cannot confirm headset power")
-            self.set_card("vss", "UNKNOWN", "Status report is stale")
-            self.set_card("mic", "UNKNOWN", "Status report is stale")
+            self.set_card("connected", "UNKNOWN", "No fresh B0 status packet")
+            self.set_card("power", "UNKNOWN", "Power is not independently reported")
+            self.set_card("vss", "UNKNOWN", "No fresh B0 status packet")
+            self.set_card("mic", "UNKNOWN", "No fresh B0 status packet")
             if snapshot.charging:
-                self.set_card("battery", "CHARGING", "Last known battery state")
+                self.set_card("battery", "CHARGING", "Last known state; report is stale")
             elif snapshot.battery_percent is not None:
-                self.set_card("battery", f"{snapshot.battery_percent}%", "Last known value (stale)")
+                self.set_card("battery", f"{snapshot.battery_percent}%", "Last known value; stale")
             else:
-                self.set_card("battery", "UNKNOWN", "Status report is stale")
+                self.set_card("battery", "UNKNOWN", "No fresh battery telemetry")
         else:
             connected = bool(snapshot.headset_connected)
-            self.set_card(
-                "connected",
-                "ON" if connected else "OFF",
-                "Wireless headset link",
-            )
+            self.set_card("connected", "ON" if connected else "OFF", "Live wireless link flag")
             self.set_card(
                 "power",
                 "ON" if connected else "OFF",
-                "Derived from the live headset-link flag",
+                "Derived from live link flag; not a separate power bit",
             )
-            self.set_card(
-                "vss",
-                "ON" if snapshot.vss_enabled else "OFF",
-                "VIRTUAL SURROUND flag",
-            )
+            self.set_card("vss", "ON" if snapshot.vss_enabled else "OFF", "Live B0 bit 0")
             self.set_card(
                 "mic",
                 "MUTED" if snapshot.mic_muted else "ON",
-                "Microphone input state",
+                "Live B0 bit 1",
             )
             if snapshot.charging:
-                self.set_card("battery", "CHARGING", "Battery level reported as 0x80")
+                self.set_card("battery", "CHARGING", "B0 byte 3 = 0x80")
             elif snapshot.battery_percent is not None:
-                self.set_card("battery", f"{snapshot.battery_percent}%", "Live B0 telemetry")
+                self.set_card("battery", f"{snapshot.battery_percent}%", "Live B0 byte 3")
             else:
-                self.set_card("battery", "UNKNOWN", "No battery percentage decoded")
+                self.set_card("battery", "UNKNOWN", "Battery value unavailable")
 
         self.model_var.set(f"Model: {snapshot.model}")
-        self.ping_var.set(f"Status pings (B0): {snapshot.status_reports}")
+        self.ping_var.set(f"B0 status packets: {snapshot.status_reports}")
+        self.total_var.set(
+            f"Total HID input reports: {snapshot.total_reports} "
+            f"({snapshot.total_bytes} bytes)"
+        )
         self.age_var.set(f"Last B0 report: {self.age_text(snapshot.last_status_time)}")
         self.raw_var.set(f"Last B0: {snapshot.last_status_hex or '—'}")
         self.volume_var.set(
-            "Headset volume telemetry: not decoded from the known B0 status packet; "
-            "the UI does not guess a volume percentage."
+            "Volume: not decoded from the known B0 status packet; raw reports are shown below for discovery."
         )
 
-        if snapshot.last_error:
-            self.error_var.set(f"Reader: {snapshot.last_error}")
-        else:
-            self.error_var.set("")
-
+        self.refresh_collection_table(snapshot)
+        self.refresh_raw_log(snapshot)
         self.after(100, self.refresh_ui)
 
     def on_close(self) -> None:

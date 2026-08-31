@@ -1,0 +1,36 @@
+PS3 Wireless Stereo Headset HID Report Descriptor
+========================================================================
+VID/PID: 12BA:0035
+Interface: 3
+Usage Page: 000C
+Usage: 0001
+Length: 51 bytes
+
+RAW DESCRIPTOR
+------------------------------------------------------------------------
+05 0C 09 01 A1 01 85 01 09 E9 09 EA 15 00 25 01 75 01 95 02 81 02 75 06 95 01 81 03 09 B6 09 CD 09 B5 15 00 25 01 75 01 95 03 81 02 75 05 95 01 81 03 C0
+
+DECODED SUMMARY
+------------------------------------------------------------------------
+USAGE_PAGE      0x000C
+USAGE           0x0001 (page 0x000C)
+COLLECTION      type=0x01
+REPORT_ID       1
+USAGE           0x00E9 (page 0x000C)
+USAGE           0x00EA (page 0x000C)
+REPORT_SIZE     1
+REPORT_COUNT    2
+INPUT           report_id=1 size=1 count=2 flags=0x02
+REPORT_SIZE     6
+REPORT_COUNT    1
+INPUT           report_id=1 size=6 count=1 flags=0x03
+USAGE           0x00B6 (page 0x000C)
+USAGE           0x00CD (page 0x000C)
+USAGE           0x00B5 (page 0x000C)
+REPORT_SIZE     1
+REPORT_COUNT    3
+INPUT           report_id=1 size=1 count=3 flags=0x02
+REPORT_SIZE     5
+REPORT_COUNT    1
+INPUT           report_id=1 size=5 count=1 flags=0x03
+END_COLLECTION

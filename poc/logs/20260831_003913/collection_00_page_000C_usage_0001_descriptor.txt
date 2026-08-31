@@ -1,0 +1,81 @@
+PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=PS3 Wireless Stereo Headset HID REPORT DESCRIPTOR
+=
+VID/PID: 12BA:0035
+Usage Page: 0x000C
+Usage: 0x0001
+Length: 51 bytes
+
+RAW
+---
+05 0C 09 01 A1 01 85 01 09 E9 09 EA 15 00 25 01 75 01 95 02 81 02 75 06 95 01 81 03 09 B6 09 CD 09 B5 15 00 25 01 75 01 95 03 81 02 75 05 95 01 81 03 C0

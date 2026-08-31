@@ -1,0 +1,66 @@
+{
+  "session_started": "2026-08-29T18:53:58.968+00:00",
+  "vendor_id": 4794,
+  "product_id": 53,
+  "device_count": 4,
+  "devices": [
+    {
+      "path": "\\\\?\\HID#VID_12BA&PID_0035&MI_03&Col01#8&38d34f1e&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}",
+      "vendor_id": 4794,
+      "product_id": 53,
+      "serial_number": "",
+      "release_number": 256,
+      "manufacturer_string": "Sony Interactive Entertainment",
+      "product_string": "Hid Interface",
+      "usage_page": 12,
+      "usage": 1,
+      "interface_number": 3,
+      "bus_type": 1
+    },
+    {
+      "path": "\\\\?\\HID#VID_12BA&PID_0035&MI_03&Col02#8&38d34f1e&0&0001#{4d1e55b2-f16f-11cf-88cb-001111000030}",
+      "vendor_id": 4794,
+      "product_id": 53,
+      "serial_number": "",
+      "release_number": 256,
+      "manufacturer_string": "Sony Interactive Entertainment",
+      "product_string": "Hid Interface",
+      "usage_page": 65280,
+      "usage": 1,
+      "interface_number": 3,
+      "bus_type": 1
+    },
+    {
+      "path": "\\\\?\\HID#VID_12BA&PID_0035&MI_03&Col03#8&38d34f1e&0&0002#{4d1e55b2-f16f-11cf-88cb-001111000030}",
+      "vendor_id": 4794,
+      "product_id": 53,
+      "serial_number": "",
+      "release_number": 256,
+      "manufacturer_string": "Sony Interactive Entertainment",
+      "product_string": "Hid Interface",
+      "usage_page": 65283,
+      "usage": 32,
+      "interface_number": 3,
+      "bus_type": 1
+    },
+    {
+      "path": "\\\\?\\HID#VID_12BA&PID_0035&MI_03&Col04#8&38d34f1e&0&0003#{4d1e55b2-f16f-11cf-88cb-001111000030}",
+      "vendor_id": 4794,
+      "product_id": 53,
+      "serial_number": "",
+      "release_number": 256,
+      "manufacturer_string": "Sony Interactive Entertainment",
+      "product_string": "Hid Interface",
+      "usage_page": 65281,
+      "usage": 32,
+      "interface_number": 3,
+      "bus_type": 1
+    }
+  ],
+  "read_only": true,
+  "notes": [
+    "Input reports are captured passively.",
+    "No HID output or feature writes are performed.",
+    "A human action marker is correlation metadata, not an inferred headset state."
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "session_ended": "2026-08-29T18:55:15.568+00:00",
+  "capture_directory": "C:\\Users\\Kepar\\Downloads\\Ps3WirelessStereoHeadset-Hub-For-PC\\poc\\logs\\20260829_185358",
+  "read_only": true,
+  "collections": [
+    {
+      "collection_key": "0:b'\\\\\\\\?\\\\HID#VID_12BA&PID_0035&MI_03&Col01#8&38d34f1e&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}'",
+      "reports": 0,
+      "bytes_received": 0,
+      "unique_reports": 0,
+      "errors": 0,
+      "last_report_at": null,
+      "length_distribution": {}
+    },
+    {
+      "collection_key": "1:b'\\\\\\\\?\\\\HID#VID_12BA&PID_0035&MI_03&Col02#8&38d34f1e&0&0001#{4d1e55b2-f16f-11cf-88cb-001111000030}'",
+      "reports": 0,
+      "bytes_received": 0,
+      "unique_reports": 0,
+      "errors": 0,
+      "last_report_at": null,
+      "length_distribution": {}
+    },
+    {
+      "collection_key": "2:b'\\\\\\\\?\\\\HID#VID_12BA&PID_0035&MI_03&Col03#8&38d34f1e&0&0002#{4d1e55b2-f16f-11cf-88cb-001111000030}'",
+      "reports": 0,
+      "bytes_received": 0,
+      "unique_reports": 0,
+      "errors": 305,
+      "last_report_at": null,
+      "length_distribution": {}
+    },
+    {
+      "collection_key": "3:b'\\\\\\\\?\\\\HID#VID_12BA&PID_0035&MI_03&Col04#8&38d34f1e&0&0003#{4d1e55b2-f16f-11cf-88cb-001111000030}'",
+      "reports": 0,
+      "bytes_received": 0,
+      "unique_reports": 0,
+      "errors": 0,
+      "last_report_at": null,
+      "length_distribution": {}
+    }
+  ]
+}

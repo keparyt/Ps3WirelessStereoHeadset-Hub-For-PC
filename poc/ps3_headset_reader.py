@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""Robust receive-only Windows HID reader.
+"""Windows HID input reader for the PlayStation wireless headset receiver.
 
-The PS3 Wireless Stereo Headset receiver exposes several HID collections. The
-Windows HID class driver expects applications to keep an input read pending;
-this module uses overlapped ReadFile so the pending read can be cancelled
-cleanly when the device disappears or the application exits.
+The reference Linux driver for 12BA:0035 receives the receiver's raw HID
+reports and handles 8-byte B0 status packets. On Windows we reproduce that
+receive path with a native overlapped ReadFile loop.
 
-No HID output reports, feature reports, control transfers, or headset commands
-are sent by this module.
+This module is strictly receive-only: it never sends HID output/feature
+reports and never performs a polling command.
 """
 
 from __future__ import annotations
@@ -34,18 +33,17 @@ FILE_FLAG_OVERLAPPED = 0x40000000
 
 WAIT_OBJECT_0 = 0x00000000
 WAIT_TIMEOUT = 0x00000102
-INFINITE = 0xFFFFFFFF
 ERROR_IO_PENDING = 997
 ERROR_OPERATION_ABORTED = 995
 ERROR_DEVICE_NOT_CONNECTED = 1167
 ERROR_INVALID_HANDLE = 6
-ERROR_FILE_NOT_FOUND = 2
-ERROR_ACCESS_DENIED = 5
+ERROR_INVALID_USER_BUFFER = 1784
+ERROR_OPERATION_IN_PROGRESS = 112
 
 INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 
-# ULONG_PTR is pointer-sized. ctypes.wintypes does not expose ULONG_PTR
-# consistently across Python/Windows builds.
+# ULONG_PTR is pointer-sized. ctypes.wintypes does not expose ULONG_PTR on
+# every supported Python/Windows combination.
 ULONG_PTR = ctypes.c_size_t
 
 
@@ -62,28 +60,47 @@ class OVERLAPPED(ctypes.Structure):
 if _kernel32 is not None:
     _CreateFileW = _kernel32.CreateFileW
     _CreateFileW.argtypes = [
-        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
-        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
     ]
     _CreateFileW.restype = wintypes.HANDLE
 
     _ReadFile = _kernel32.ReadFile
     _ReadFile.argtypes = [
-        wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD,
-        ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(OVERLAPPED),
+        wintypes.HANDLE,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.POINTER(OVERLAPPED),
     ]
     _ReadFile.restype = wintypes.BOOL
 
     _GetOverlappedResult = _kernel32.GetOverlappedResult
     _GetOverlappedResult.argtypes = [
-        wintypes.HANDLE, ctypes.POINTER(OVERLAPPED),
-        ctypes.POINTER(wintypes.DWORD), wintypes.BOOL,
+        wintypes.HANDLE,
+        ctypes.POINTER(OVERLAPPED),
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.BOOL,
     ]
     _GetOverlappedResult.restype = wintypes.BOOL
 
     _CreateEventW = _kernel32.CreateEventW
-    _CreateEventW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+    _CreateEventW.argtypes = [
+        wintypes.LPVOID,
+        wintypes.BOOL,
+        wintypes.BOOL,
+        wintypes.LPCWSTR,
+    ]
     _CreateEventW.restype = wintypes.HANDLE
+
+    _ResetEvent = _kernel32.ResetEvent
+    _ResetEvent.argtypes = [wintypes.HANDLE]
+    _ResetEvent.restype = wintypes.BOOL
 
     _WaitForSingleObject = _kernel32.WaitForSingleObject
     _WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
@@ -98,14 +115,16 @@ if _kernel32 is not None:
     _CloseHandle.restype = wintypes.BOOL
 
 
-def windows_path(path: object) -> str:
-    if isinstance(path, bytes):
-        return path.decode("utf-8", errors="replace")
-    return str(path)
-
-
 def native_windows_available() -> bool:
     return os.name == "nt" and _kernel32 is not None
+
+
+def windows_path(path: object) -> str:
+    if isinstance(path, bytes):
+        # HIDAPI normally returns a UTF-8/ASCII device path. Windows device
+        # paths are Unicode, so preserve it as text for CreateFileW.
+        return path.decode("utf-8", errors="replace")
+    return str(path)
 
 
 def _last_error() -> int:
@@ -113,7 +132,10 @@ def _last_error() -> int:
 
 
 class NativeWindowsHIDReader:
-    """Receive-only reader for one Windows HID collection."""
+    """Receive input reports from one Windows HID collection."""
+
+    READ_BUFFER_SIZE = 4096
+    WAIT_SLICE_MS = 100
 
     def __init__(
         self,
@@ -122,7 +144,7 @@ class NativeWindowsHIDReader:
         on_error: Callable[[Exception], None] | None = None,
     ) -> None:
         if not native_windows_available():
-            raise OSError("Native Windows HID backend is only available on Windows.")
+            raise OSError("Native Windows HID backend is only available on Windows")
 
         self.path = windows_path(path)
         self.on_report = on_report
@@ -132,6 +154,7 @@ class NativeWindowsHIDReader:
         self.handle: wintypes.HANDLE | None = None
         self.event: wintypes.HANDLE | None = None
         self._lock = threading.Lock()
+        self._stopped = False
 
     def open(self) -> None:
         handle = _CreateFileW(
@@ -146,7 +169,7 @@ class NativeWindowsHIDReader:
 
         if handle in (None, INVALID_HANDLE_VALUE):
             error = _last_error()
-            raise OSError(error, f"CreateFileW failed for HID path (WinError {error})")
+            raise OSError(error, f"CreateFileW failed (WinError {error})")
 
         event = _CreateEventW(None, True, False, None)
         if not event:
@@ -157,12 +180,13 @@ class NativeWindowsHIDReader:
         with self._lock:
             self.handle = handle
             self.event = event
+            self._stopped = False
 
     def start(self) -> None:
         self.open()
         self.thread = threading.Thread(
             target=self._worker,
-            name="native-hid-reader",
+            name="ps3-headset-hid-reader",
             daemon=True,
         )
         self.thread.start()
@@ -177,15 +201,26 @@ class NativeWindowsHIDReader:
 
         try:
             while not self.stop_event.is_set():
+                # CreateEvent is manual-reset. It MUST be reset before every
+                # new overlapped read, otherwise the event remains signaled
+                # after the first packet and the next WaitForSingleObject()
+                # returns immediately even though the new read is pending.
+                if not _ResetEvent(event):
+                    error = _last_error()
+                    self._handle_error(
+                        OSError(error, f"ResetEvent failed (WinError {error})")
+                    )
+                    return
+
                 overlapped = OVERLAPPED()
                 overlapped.hEvent = event
-                buffer = ctypes.create_string_buffer(4096)
+                buffer = ctypes.create_string_buffer(self.READ_BUFFER_SIZE)
                 received = wintypes.DWORD(0)
 
                 ok = _ReadFile(
                     handle,
                     buffer,
-                    ctypes.sizeof(buffer),
+                    self.READ_BUFFER_SIZE,
                     ctypes.byref(received),
                     ctypes.byref(overlapped),
                 )
@@ -193,21 +228,32 @@ class NativeWindowsHIDReader:
                 if not ok:
                     error = _last_error()
                     if error != ERROR_IO_PENDING:
-                        if self.stop_event.is_set() and error in {
+                        if error in {
                             ERROR_OPERATION_ABORTED,
+                            ERROR_DEVICE_NOT_CONNECTED,
                             ERROR_INVALID_HANDLE,
-                        }:
+                        } and self.stop_event.is_set():
                             return
-                        self._handle_error(OSError(error, f"HID ReadFile failed (WinError {error})"))
+                        self._handle_error(
+                            OSError(error, f"ReadFile failed (WinError {error})")
+                        )
                         return
 
+                # ReadFile may complete synchronously or asynchronously.
+                # For an asynchronous operation, wait for the event. The
+                # timeout lets stop() cancel the pending read promptly.
                 while not self.stop_event.is_set():
-                    wait_result = _WaitForSingleObject(event, 100)
+                    wait_result = _WaitForSingleObject(event, self.WAIT_SLICE_MS)
                     if wait_result == WAIT_OBJECT_0:
                         break
                     if wait_result != WAIT_TIMEOUT:
                         error = _last_error()
-                        self._handle_error(OSError(error, f"WaitForSingleObject failed (WinError {error})"))
+                        self._handle_error(
+                            OSError(
+                                error,
+                                f"WaitForSingleObject failed (WinError {error})",
+                            )
+                        )
                         return
 
                 if self.stop_event.is_set():
@@ -216,21 +262,38 @@ class NativeWindowsHIDReader:
 
                 received = wintypes.DWORD(0)
                 if not _GetOverlappedResult(
-                    handle, ctypes.byref(overlapped), ctypes.byref(received), False
+                    handle,
+                    ctypes.byref(overlapped),
+                    ctypes.byref(received),
+                    False,
                 ):
                     error = _last_error()
+                    if error == ERROR_OPERATION_IN_PROGRESS:
+                        # Defensive handling for a spurious event. Keep the
+                        # read loop alive rather than killing the monitor.
+                        continue
                     if error in {
                         ERROR_OPERATION_ABORTED,
                         ERROR_DEVICE_NOT_CONNECTED,
                         ERROR_INVALID_HANDLE,
                     }:
-                        self._handle_error(OSError(error, f"HID read stopped (WinError {error})"))
+                        self._handle_error(
+                            OSError(error, f"HID read stopped (WinError {error})")
+                        )
                         return
-                    self._handle_error(OSError(error, f"GetOverlappedResult failed (WinError {error})"))
+                    self._handle_error(
+                        OSError(
+                            error,
+                            f"GetOverlappedResult failed (WinError {error})",
+                        )
+                    )
                     return
 
                 if received.value:
-                    self.on_report(buffer.raw[:received.value])
+                    # The receiver's reference implementation consumes the
+                    # raw HID report and checks data[0] == 0xB0. Do not strip
+                    # the report ID here; the protocol layer needs byte 0.
+                    self.on_report(buffer.raw[: received.value])
 
         except Exception as exc:  # pragma: no cover - defensive runtime path
             self._handle_error(exc)
@@ -240,6 +303,9 @@ class NativeWindowsHIDReader:
             self.on_error(exc)
 
     def stop(self) -> None:
+        if self.stop_event.is_set() and self._stopped:
+            return
+
         self.stop_event.set()
 
         with self._lock:
@@ -247,6 +313,7 @@ class NativeWindowsHIDReader:
             event = self.event
             self.handle = None
             self.event = None
+            self._stopped = True
 
         if handle not in (None, INVALID_HANDLE_VALUE):
             try:
@@ -256,7 +323,7 @@ class NativeWindowsHIDReader:
 
         thread = self.thread
         if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=1.0)
+            thread.join(timeout=1.5)
 
         if event not in (None, INVALID_HANDLE_VALUE):
             try:

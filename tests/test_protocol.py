@@ -2,7 +2,7 @@ from poc.ps3_headset_protocol import decode_b0
 
 
 def test_b0_gold_status():
-    report = bytes.fromhex("B0 05 64 55 0B 2A 11 00")
+    report = bytes.fromhex("B0 05 64 55 4B 2A 11 00")
     decoded = decode_b0(report)
     assert decoded is not None
     assert decoded["volume_level"] == 5
@@ -12,7 +12,8 @@ def test_b0_gold_status():
     assert decoded["vss"] is True
     assert decoded["mic_muted"] is True
     assert decoded["headset_connected"] is True
-    assert decoded["family_flag"] == 0
+    assert decoded["family_flag"] == 1
+    assert "Gold Wireless Stereo Headset" in decoded["model"]
 
 
 def test_b0_charging():

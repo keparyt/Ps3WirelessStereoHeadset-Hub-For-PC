@@ -1,32 +1,16 @@
 #!/usr/bin/env python3
-"""Known receive-side protocol for the Sony PlayStation Gold Wireless Headset.
+"""Receive-side protocol decoder for the Sony PlayStation Gold Wireless Headset.
 
-Target hardware:
-    Headset:  Sony PlayStation Gold Wireless Stereo Headset, CUHYA-0080
-    Adapter:  CUHYA-0081 wireless adapter
-    Marking:  [NO60] (user-provided hardware marking)
-    Receiver: USB VID 0x12BA / PID 0x0035
+This module only decodes already-received bytes. It performs no I/O and sends
+no HID output, feature, or control reports.
 
-This module ONLY decodes bytes that have already been received from the HID
-input path. It never opens devices and never performs any I/O.
-
-Known incoming status report:
+Observed status report:
     B0 VV CC BB FF XX 11 00
 
-    VV = receiver volume level, 0x00..0x05 (6 reported levels)
-    CC = sound/chat balance, 0x00..0x64
-    BB = battery level, 0x00..0x64; 0x80 while charging
-    FF = flags
-         bit 0 = VSS enabled
-         bit 1 = microphone muted
-         bit 3 = headset connected to receiver
-         bits 6-7 = family/mode flags
-    XX = unknown changing byte
-    11 = observed constant
-    00 = observed constant
-
-The byte-level mapping is based on the public reverse-engineered
-counter185/hid-playstation-headset driver for receiver 12BA:0035.
+VV = volume level, 0..10 (10 steps, exposed as 0..100 percent)
+CC = chat balance, 0..100
+BB = battery, 0..100; 0x80 while charging
+FF = flags: bit 0 VSS, bit 1 microphone mute, bit 3 connected
 """
 
 from __future__ import annotations
@@ -43,7 +27,7 @@ TARGET_HEADSET_MARKING = "[NO60]"
 TARGET_ADAPTER_MODEL = "CUHYA-0081"
 
 VOLUME_MIN = 0x00
-VOLUME_MAX = 0x05
+VOLUME_MAX = 0x0A  # 10 volume levels: 0..10
 CHAT_BALANCE_MIN = 0x00
 CHAT_BALANCE_MAX = 0x64
 BATTERY_MIN = 0x00
@@ -56,10 +40,8 @@ CONNECTED_MASK = 0x08
 MODEL_MASK = 0xC0
 
 
-
 def hex_bytes(data: bytes | bytearray) -> str:
     return " ".join(f"{b:02X}" for b in data)
-
 
 
 def decode_b0(report: bytes) -> dict[str, Any] | None:
@@ -73,6 +55,7 @@ def decode_b0(report: bytes) -> dict[str, Any] | None:
     flags = report[4]
 
     volume_level = volume_raw if VOLUME_MIN <= volume_raw <= VOLUME_MAX else None
+    volume_percent = volume_level * 10 if volume_level is not None else None
     chat_balance = (
         chat_balance_raw
         if CHAT_BALANCE_MIN <= chat_balance_raw <= CHAT_BALANCE_MAX
@@ -90,15 +73,18 @@ def decode_b0(report: bytes) -> dict[str, Any] | None:
         charging = False
 
     family_flag = (flags & MODEL_MASK) >> 6
-    if family_flag == 0b01:
-        model = TARGET_HEADSET_MODEL
-    else:
-        model = f"Sony headset (family flag {family_flag:02b})"
+    model = (
+        TARGET_HEADSET_MODEL
+        if family_flag == 0b01
+        else f"Sony headset (family flag {family_flag:02b})"
+    )
 
     return {
         "report_id": STATUS_REPORT_ID,
         "length": len(report),
+        "model": model,
         "volume_level": volume_level,
+        "volume_percent": volume_percent,
         "volume_raw": volume_raw,
         "chat_balance": chat_balance,
         "chat_balance_raw": chat_balance_raw,

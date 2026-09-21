@@ -1,133 +1,502 @@
 # PS3 Wireless Stereo Headset Hub for Windows
 
-Windows tooling for the **Sony PlayStation Gold Wireless Stereo Headset** and its USB wireless receiver.
+> **A community-driven Windows interface for the Sony PlayStation Wireless Stereo Headset.**
 
-This project is based on the reverse-engineered `12BA:0035` HID behavior documented by `counter185/hid-playstation-headset`.
+![Platform](https://img.shields.io/badge/platform-Windows-blue)
+![Language](https://img.shields.io/badge/language-Python-yellow)
+![Status](https://img.shields.io/badge/status-Active%20R%26D-orange)
+![Protocol](https://img.shields.io/badge/HID-12BA%3A0035-purple)
 
-## Current status
+## Why does this project exist?
 
-The Windows implementation is currently **receive-only**. It can monitor the receiver without sending headset commands.
+I have a collection of these Sony wireless headsets.
 
-```text
-Headset
-   │ wireless
-   ▼
-Sony USB receiver
-   │ HID input reports
-   ▼
-Windows HID class driver
-   │
-   ├── native overlapped ReadFile reader
-   │
-   └── Tk dashboard / raw monitor
+They were designed around the PlayStation ecosystem, where the headset feels like an actual part of the console experience. On PS3 and PS4, you could see headset information, manage settings, and interact with the device instead of treating it as just another anonymous USB audio peripheral.
+
+When using the same headsets on a PC, that experience is largely missing.
+
+I always wanted to have **that kind of interface on Windows** — something that makes the headset feel like a supported device again.
+
+So this project started with a simple idea:
+
+> **Why not build the interface I always wished existed for PC?**
+
+And once the headset is understood, there is no reason to stop at simply displaying battery information.
+
+The long-term goal is to build a proper Windows companion application that can expose the headset's capabilities and potentially add useful PC-oriented features such as **media/music controls, headset controls, status information, diagnostics, and more**.
+
+This repository therefore contains both the current application work and the reverse-engineering PoC used to understand the Sony USB receiver.
+
+---
+
+## What is this?
+
+The **PS3 Wireless Stereo Headset Hub for Windows** is a Windows-focused project for communicating with and building an interface around Sony's PlayStation Wireless Stereo Headset USB receiver.
+
+The project currently concentrates on the receiver's HID interface:
+
+```
+┌───────────────────────────┐
+│ Sony Wireless Headset     │
+└─────────────┬─────────────┘
+              │ wireless
+              ▼
+┌───────────────────────────┐
+│ Sony USB Wireless         │
+│ Receiver                  │
+│ VID 12BA / PID 0035       │
+└─────────────┬─────────────┘
+              │ USB HID
+              ▼
+┌───────────────────────────┐
+│ Windows HID subsystem     │
+└─────────────┬─────────────┘
+              │
+       ┌──────┴──────┐
+       ▼             ▼
+    HIDAPI       Windows Raw Input
+       │             │
+       └──────┬──────┘
+              ▼
+┌───────────────────────────┐
+│ Protocol decoder          │
+└─────────────┬─────────────┘
+              ▼
+┌───────────────────────────┐
+│ Windows application       │
+└───────────────────────────┘
 ```
 
-### Known telemetry
+The original PoC is deliberately **receive-only** while the protocol is being investigated. It does not send HID output reports, feature reports, control commands, or battery-polling commands.
 
-The known `B0` status packet is 8 bytes:
+---
 
-```text
-B0 VV CC BB FF XX 11 00
-│  │  │  │  │  │  │  └─ observed constant
-│  │  │  │  │  │  └──── observed constant
-│  │  │  │  │  └─────── unknown/changing
-│  │  │  │  └────────── flags
-│  │  │  └───────────── battery (00-64, 80=charging)
-│  │  └──────────────── sound/chat balance
-│  └─────────────────── receiver volume (00-05)
-└────────────────────── report ID
+# Project goals
+
+The project has two closely related goals.
+
+### 1. Understand the hardware
+
+Reverse-engineer the USB receiver and determine how it reports:
+
+- headset connection
+- battery level
+- charging state
+- volume
+- game/chat balance
+- VSS
+- microphone mute
+- headset family/mode information
+- other currently unknown data
+
+### 2. Build a real Windows experience
+
+Turn that knowledge into a polished application that makes the headset feel like a first-class PC device.
+
+The eventual direction is not limited to displaying telemetry.
+
+Potential PC features include:
+
+- headset status dashboard
+- battery and charging display
+- volume controls
+- microphone controls
+- VSS controls
+- game/chat balance
+- media/music controls
+- play/pause
+- previous/next track
+- Windows media integration
+- desktop notifications
+- tray application
+- diagnostics
+- HID packet inspection
+- capture/replay tools
+- configurable shortcuts
+- additional headset-specific features discovered during reverse engineering
+
+Some of these are future goals and are **not currently implemented**.
+
+---
+
+# Current status
+
+The project is actively being developed.
+
+## Currently implemented / investigated
+
+| Feature | Status |
+|---|---|
+| Sony receiver detection | ✅ |
+| VID/PID identification | ✅ |
+| HID collection enumeration | ✅ |
+| HID report monitoring | ✅ |
+| Windows native HID reader | ✅ |
+| Windows Raw Input diagnostic path | ✅ |
+| Raw report logging | ✅ |
+| JSONL capture files | ✅ |
+| Session summaries | ✅ |
+| HID descriptor investigation | ✅ |
+| `B0` status packet detection | ✅ |
+| Battery telemetry | ✅ |
+| Charging detection | ✅ |
+| Volume telemetry | ✅ |
+| Chat/game balance telemetry | ✅ |
+| VSS state | ✅ |
+| Microphone mute state | ✅ |
+| Headset link state | ✅ |
+| Protocol unit tests | ✅ |
+| Full PC headset controls | 🚧 |
+| HID output/control protocol | 🚧 |
+| Pairing research | 🚧 |
+| Music/media controls | 🚧 |
+| Complete audio integration | 🚧 |
+
+The exact implementation status can change as the project develops.
+
+---
+
+# The known B0 status packet
+
+One of the most important discoveries so far is an 8-byte HID status report beginning with `0xB0`.
+
+```
+Byte       00    01    02    03    04    05    06    07
+          ┌────┬────┬────┬────┬────┬────┬────┬────┐
+Report    │ B0 │ VV │ CC │ BB │ FF │ XX │ 11 │ 00 │
+          └────┴────┴────┴────┴────┴────┴────┴────┘
+            │    │    │    │    │    │    │    │
+            │    │    │    │    │    │    │    │
+            │    │    │    │    │    │    │    └─ observed constant
+            │    │    │    │    │    │    └────── observed constant
+            │    │    │    │    │    └─────────── currently unknown
+            │    │    │    │    └──────────────── flags
+            │    │    │    └───────────────────── battery
+            │    │    └────────────────────────── chat balance
+            │    └─────────────────────────────── volume
+            └──────────────────────────────────── report ID
 ```
 
-Flags currently decoded:
+Current decoder knowledge includes:
 
-- bit 0: VSS enabled
-- bit 1: microphone muted
-- bit 3: headset linked to receiver
-- bits 6-7: headset family/mode
+- volume raw level
+- chat/game balance
+- battery percentage
+- charging state
+- VSS
+- microphone mute
+- headset link state
+- headset family/mode flags
 
-## Windows reader
+See [TECHNICAL_README.md](TECHNICAL_README.md) for the detailed protocol documentation and confidence levels.
 
-The native reader uses:
+---
 
-- `CreateFileW`
-- `GENERIC_READ`
-- shared read/write access
-- overlapped `ReadFile`
-- `CancelIoEx` when stopping
+# Application
 
-It never requests write access and never sends HID output/feature reports.
+The project is intended to become more than a diagnostic console.
 
-The overlapped implementation is important because a synchronous `ReadFile` can remain blocked when the headset is unplugged or the GUI closes.
+The application is being designed around the idea of a **PlayStation-style headset control experience for Windows**.
 
-## Run
+### Concept
 
-Install the dependency:
-
-```powershell
-python -m pip install -r requirements.txt
+```
+┌──────────────────────────────────────────────┐
+│ PS3 Wireless Stereo Headset                  │
+├──────────────────────────────────────────────┤
+│                                              │
+│  🔋 Battery       🎧 Connected               │
+│  ████████░░       YES                        │
+│                                              │
+│  🔊 Volume        🎙 Microphone              │
+│  ███████░░░       ON                         │
+│                                              │
+│  🎮 Game/Chat     VSS                        │
+│  ██████░░░░       ON                         │
+│                                              │
+│  ▶ Previous   ⏯ Play/Pause   ⏭ Next         │
+│                                              │
+└──────────────────────────────────────────────┘
 ```
 
-Start the live dashboard:
+The exact UI and available controls are still evolving.
+
+**Screenshots will be added as the application UI stabilizes.**
+
+---
+
+# Why reverse-engineer it?
+
+The receiver is not simply a generic USB audio device.
+
+It exposes HID collections and status information that can provide information about the headset independently from the audio stream.
+
+That makes it possible to investigate the device at a lower level:
+
+```
+USB device
+   ↓
+HID collections
+   ↓
+HID reports
+   ↓
+Raw bytes
+   ↓
+Protocol fields
+   ↓
+Meaning
+   ↓
+Application features
+```
+
+Rather than guessing what the headset does, the project captures real reports and compares them while changing one headset state at a time.
+
+---
+
+# PoC tools
+
+The `poc/` directory contains the research and diagnostic tools.
+
+### Live dashboard
 
 ```powershell
 python poc/ps3_headset_panel.py
 ```
 
-Start the raw HID monitor:
+Provides a live Windows dashboard backed by detailed diagnostic logging.
+
+### HID monitor
 
 ```powershell
 python poc/ps3_headset_hid_monitor.py
 ```
 
-If the direct HID reader does not receive reports, run the Windows Raw Input diagnostic:
+Enumerates the Sony receiver, monitors HID input, and records captures.
+
+### Windows Raw Input probe
 
 ```powershell
 python poc/ps3_headset_rawinput_probe.py
 ```
 
-That diagnostic uses a separate Windows input-delivery path and is useful for determining whether Windows itself is receiving the receiver's reports.
+Uses Windows Raw Input as a second diagnostic path.
 
-## Device
+This is useful when the receiver can be enumerated successfully but a direct HID reader does not receive reports.
 
-Known receiver:
+---
 
-```text
-VID: 12BA
-PID: 0035
-Manufacturer: Sony Interactive Entertainment
+# Installation
+
+Windows is currently the primary target.
+
+Install the Python dependencies:
+
+```powershell
+python -m pip install -r requirements.txt
 ```
 
-The receiver exposes multiple HID collections, including vendor-defined collections. The monitor therefore records the collection, usage page, usage, raw report bytes, and report descriptor.
+Then run one of the PoC tools above.
 
-## Captures
-
-The monitor writes sessions to:
-
-```text
-poc/logs/<timestamp>/
-```
-
-including:
-
-- `session.json`
-- `capture.jsonl`
-- `summary.json`
-- HID report descriptor dumps
-
-## Development
-
-Run protocol tests from the repository root:
+For development and protocol testing:
 
 ```powershell
 python -m pytest -q
 ```
 
-The protocol decoder is deliberately isolated from device I/O so captured reports can be replayed and tested without hardware.
+---
 
-## Important limitation
+# Captures
 
-This project does **not** yet implement headset control, pairing, audio routing, or microphone routing. The immediate goal is a reliable Windows HID telemetry layer. Once that layer is stable, additional behavior can be investigated separately and safely.
+The PoC tools save diagnostic sessions under:
 
-## Reference
+```
+poc/logs/
+```
 
-- `counter185/hid-playstation-headset` — Linux HID driver documenting the `12BA:0035` receiver and `B0` status report.
+A session may contain:
+
+```
+poc/logs/<timestamp>/
+├── session.json
+├── capture.jsonl
+├── summary.json
+└── HID descriptor information
+```
+
+These captures are important to the project because they allow protocol research without requiring every experiment to be performed again.
+
+---
+
+# Safety and development philosophy
+
+The initial protocol research is intentionally conservative.
+
+The PoC operates in:
+
+```
+HEADSET
+   │
+   ▼
+RECEIVER
+   │
+   ▼
+WINDOWS
+   │
+   ▼
+READ
+   │
+   ▼
+DECODE
+   │
+   ▼
+LOG
+```
+
+It does **not** currently attempt arbitrary HID writes.
+
+This lets the project establish what the receiver actually reports before experimenting with commands that could alter device state.
+
+---
+
+# Hardware
+
+Known receiver:
+
+```
+Vendor ID:     0x12BA
+Product ID:    0x0035
+Manufacturer:  Sony Interactive Entertainment
+```
+
+The receiver exposes multiple HID collections, including vendor-defined collections.
+
+The exact collections and usage pages should not be assumed to be identical across every revision of Sony's headset hardware. New captures should therefore be treated as evidence rather than automatically applying an interpretation from another device.
+
+---
+
+# Project structure
+
+```
+.
+├── app/
+│   └── Windows application
+│
+├── poc/
+│   ├── ps3_headset_panel.py
+│   ├── ps3_headset_hid_monitor.py
+│   ├── ps3_headset_rawinput_probe.py
+│   ├── ps3_headset_protocol.py
+│   ├── ps3_headset_reader.py
+│   └── logs/
+│
+├── tests/
+│   └── protocol tests
+│
+├── requirements.txt
+├── README.md
+└── TECHNICAL_README.md
+```
+
+---
+
+# Roadmap
+
+The roadmap is intentionally open-ended.
+
+### Foundation
+
+- [x] Detect receiver
+- [x] Enumerate HID collections
+- [x] Capture input reports
+- [x] Decode known telemetry
+- [x] Build diagnostic tooling
+
+### Application
+
+- [x] Initial Windows GUI
+- [ ] Refine application UI
+- [ ] Add persistent device state
+- [ ] Tray integration
+- [ ] Notifications
+- [ ] Settings
+
+### Headset controls
+
+- [ ] Fully understand output protocol
+- [ ] Investigate safe volume control
+- [ ] Investigate VSS control
+- [ ] Investigate microphone control
+- [ ] Investigate game/chat balance control
+
+### PC features
+
+- [ ] Music/media controls
+- [ ] Windows media integration
+- [ ] Configurable shortcuts
+- [ ] Desktop integration
+- [ ] Additional PC-specific functionality
+
+### Reverse engineering
+
+- [ ] Identify remaining B0 fields
+- [ ] Capture additional headset revisions
+- [ ] Map every HID collection
+- [ ] Investigate pairing
+- [ ] Document command protocol
+- [ ] Build a comprehensive replay/capture test suite
+
+---
+
+# Credits and references
+
+The reverse-engineering work is informed in part by the Linux project:
+
+**counter185/hid-playstation-headset**
+
+That project documents the Sony `12BA:0035` receiver and provided an important reference point for understanding the known status report.
+
+This Windows project is an independent implementation and research effort.
+
+---
+
+# Contributing
+
+If you own one of these headsets and can capture useful HID behavior, additional hardware observations are extremely valuable.
+
+Useful contributions include:
+
+- HID descriptors
+- raw report captures
+- receiver revisions
+- headset revisions
+- behavior changes
+- protocol observations
+- application improvements
+- Windows compatibility testing
+
+When reporting a discovery, include:
+
+1. Hardware model/revision if known
+2. Receiver VID/PID
+3. HID collection / usage information
+4. Raw report bytes
+5. What changed on the headset
+6. What changed in the report
+
+That makes observations reproducible.
+
+---
+
+# The long-term idea
+
+This started because I have these headsets sitting in my collection and wanted to give them the experience they deserve on a PC.
+
+I remember the headset being part of the PlayStation experience. On PC, I wanted something closer to:
+
+> **Plug it in → Windows recognizes it → open the hub → see the headset → control it → use it.**
+
+And if we are already reverse-engineering the hardware to make that possible, **why stop at reproducing the old console experience?**
+
+The goal is to take what Sony exposed, understand it properly, and build something useful around it — including PC-oriented features that make sense today.
+
+**This project is my attempt to finally give these headsets a proper home on Windows.**

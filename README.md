@@ -414,7 +414,7 @@ The roadmap is intentionally open-ended.
 ### Application
 
 - [x] Initial Windows GUI
-- [ ] Refine application UI
+- [X] Refine application UI
 - [ ] Add persistent device state
 - [ ] Tray integration
 - [ ] Notifications
@@ -422,15 +422,15 @@ The roadmap is intentionally open-ended.
 
 ### Headset controls
 
-- [ ] Fully understand output protocol
+- [X] Fully understand output protocol
 - [ ] Investigate safe volume control
-- [ ] Investigate VSS control
-- [ ] Investigate microphone control
-- [ ] Investigate game/chat balance control
+- [X] Investigate VSS control
+- [X] Investigate microphone control
+- [X] Investigate game/chat balance control
 
 ### PC features
 
-- [ ] Music/media controls
+- [X] Music/media controls
 - [ ] Windows media integration
 - [ ] Configurable shortcuts
 - [ ] Desktop integration
@@ -438,7 +438,7 @@ The roadmap is intentionally open-ended.
 
 ### Reverse engineering
 
-- [ ] Identify remaining B0 fields
+- [X] Identify remaining B0 fields
 - [ ] Capture additional headset revisions
 - [ ] Map every HID collection
 - [ ] Investigate pairing

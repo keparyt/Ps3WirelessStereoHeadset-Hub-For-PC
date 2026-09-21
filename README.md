@@ -451,7 +451,7 @@ The roadmap is intentionally open-ended.
 
 The reverse-engineering work is informed in part by the Linux project:
 
-**counter185/hid-playstation-headset**
+**[counter185/hid-playstation-headset](https://github.com/counter185/hid-playstation-headset)**
 
 That project documents the Sony `12BA:0035` receiver and provided an important reference point for understanding the known status report.
 

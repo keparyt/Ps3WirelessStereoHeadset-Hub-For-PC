@@ -107,6 +107,67 @@ if IS_WINDOWS:
         wintypes.LPARAM,
     )
 
+    # ctypes defaults pointer-returning Win32 calls to a 32-bit C int unless
+    # their signatures are declared. Explicit prototypes keep this safe on
+    # 64-bit Windows and also allow Unicode strings to cross the boundary.
+    _user32.GetCurrentThreadId.restype = wintypes.DWORD
+    _user32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+    _user32.GetModuleHandleW.restype = wintypes.HMODULE
+    _user32.RegisterClassW.argtypes = [ctypes.POINTER(WNDCLASSW)]
+    _user32.RegisterClassW.restype = wintypes.ATOM
+    _user32.CreateWindowExW.argtypes = [
+        wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID,
+    ]
+    _user32.CreateWindowExW.restype = wintypes.HWND
+    _user32.LoadImageW.argtypes = [
+        wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT,
+        ctypes.c_int, ctypes.c_int, wintypes.UINT,
+    ]
+    _user32.LoadImageW.restype = wintypes.HANDLE
+    _user32.LoadIconW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR]
+    _user32.LoadIconW.restype = wintypes.HICON
+    _user32.PeekMessageW.argtypes = [
+        ctypes.POINTER(wintypes.MSG), wintypes.HWND,
+        wintypes.UINT, wintypes.UINT, wintypes.UINT,
+    ]
+    _user32.PeekMessageW.restype = wintypes.BOOL
+    _user32.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
+    _user32.TranslateMessage.restype = wintypes.BOOL
+    _user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
+    _user32.DispatchMessageW.restype = wintypes.LRESULT
+    _user32.DestroyWindow.argtypes = [wintypes.HWND]
+    _user32.DestroyWindow.restype = wintypes.BOOL
+    _user32.PostMessageW.argtypes = [
+        wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+    ]
+    _user32.PostMessageW.restype = wintypes.BOOL
+    _user32.DefWindowProcW.argtypes = [
+        wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+    ]
+    _user32.DefWindowProcW.restype = wintypes.LRESULT
+    _user32.CreatePopupMenu.restype = wintypes.HMENU
+    _user32.AppendMenuW.argtypes = [
+        wintypes.HMENU, wintypes.UINT, wintypes.UINT, wintypes.LPCWSTR,
+    ]
+    _user32.AppendMenuW.restype = wintypes.BOOL
+    _user32.GetCursorPos.argtypes = [ctypes.POINTER(POINT)]
+    _user32.GetCursorPos.restype = wintypes.BOOL
+    _user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+    _user32.SetForegroundWindow.restype = wintypes.BOOL
+    _user32.TrackPopupMenu.argtypes = [
+        wintypes.HMENU, wintypes.UINT, ctypes.c_int, ctypes.c_int,
+        wintypes.UINT, wintypes.HWND, wintypes.LPVOID,
+    ]
+    _user32.TrackPopupMenu.restype = wintypes.UINT
+    _user32.DestroyMenu.argtypes = [wintypes.HMENU]
+    _user32.DestroyMenu.restype = wintypes.BOOL
+    _shell32.Shell_NotifyIconW.argtypes = [
+        wintypes.DWORD, ctypes.POINTER(NOTIFYICONDATAW),
+    ]
+    _shell32.Shell_NotifyIconW.restype = wintypes.BOOL
+
 else:
     NOTIFYICONDATAW = Any  # type: ignore[misc,assignment]
 
@@ -277,7 +338,7 @@ class TrayManager:
             if not hwnd:
                 raise ctypes.WinError(ctypes.get_last_error())
 
-            self._hwnd = int(hwnd)
+            self._hwnd = int(getattr(hwnd, "value", hwnd) or 0)
             if not self._add_or_update_icon(initial=True):
                 raise ctypes.WinError(ctypes.get_last_error() or 1)
 
@@ -327,9 +388,13 @@ class TrayManager:
                 icon = None
 
         if not icon:
-            icon = _user32.LoadIconW(None, ctypes.c_void_p(_IDI_APPLICATION))
+            resource = ctypes.cast(
+                ctypes.c_void_p(_IDI_APPLICATION), wintypes.LPCWSTR
+            )
+            icon = _user32.LoadIconW(None, resource)
 
-        self._icon_handle = int(icon) if icon else None
+        value = getattr(icon, "value", icon) if icon else None
+        self._icon_handle = int(value) if value else None
         return self._icon_handle or 0
 
     def _make_data(self) -> NOTIFYICONDATAW:

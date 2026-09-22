@@ -208,10 +208,19 @@ class HeadsetSnapshot:
 
     @property
     def battery_low(self) -> bool:
+        return self.battery_low_at(BATTERY_LOW_THRESHOLD)
+
+    def battery_low_at(self, threshold: int) -> bool:
+        """Low-battery test against a caller-supplied threshold.
+
+        The app lets the user choose the warning level (the settings default
+        is 5%), so the fixed-threshold property above stays for compatibility
+        while the detector passes the configured value here.
+        """
         return (
             not self.charging
             and self.battery_percent is not None
-            and self.battery_percent <= BATTERY_LOW_THRESHOLD
+            and self.battery_percent <= threshold
         )
 
     @classmethod

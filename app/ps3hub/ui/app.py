@@ -25,8 +25,9 @@ from ..actions import ActionContext, ActionRunner, KeySender
 from ..applog import get_logger
 from ..config import AppConfig, ConfigStore, Settings
 from ..device import EventType, HeadsetService, ServiceEvent
-from ..inputs import InputEvent
+from ..inputs import InputEvent, InputId
 from ..mappings import Profile
+from ..notify import DesktopNotifier
 from .theme import (
     ABYSS, DECK, FAINT, FAULT, ICE, IDLE, LIVE, MUTED, PANEL, PAPER, RIDGE,
     WARN, apply, fonts,
@@ -74,7 +75,12 @@ class HubApp(tk.Tk):
             settle_seconds=self._config.settings.settle_seconds,
             debounce_seconds=self._config.settings.debounce_seconds,
             resync_threshold=self._config.settings.resync_threshold,
+            low_battery_threshold=self._config.settings.low_battery_threshold,
         )
+
+        # Windows toasts: one for the low-battery warning, one per executed
+        # binding. Both can be turned off in Settings.
+        self._notifier = DesktopNotifier(APP_NAME)
 
         self._runner = ActionRunner(ActionContext(
             keys=KeySender(),
@@ -267,7 +273,15 @@ class HubApp(tk.Tk):
                 return
             action_id = mapping.action_id
             params = dict(mapping.params)
-        self._runner.run(action_id, params, repeat=event.repeat)
+            action_label = mapping.action_label
+        ok = self._runner.run(action_id, params, repeat=event.repeat)
+        if ok and self._config.settings.action_toast:
+            # DesktopNotifier queues the work, so this stays cheap here.
+            self._notifier.show(
+                "Shortcut executed",
+                f"{event} → {action_label}",
+                "info",
+            )
 
     def _test_action(self, action_id: str, params: dict[str, Any]) -> None:
         ok = self._runner.run(action_id, params, repeat=1)
@@ -351,6 +365,21 @@ class HubApp(tk.Tk):
                 )
             else:
                 self._set_status(f"{event.input_event} detected.", "info")
+            if (
+                event.input_event.input_id == InputId.BATTERY_LOW
+                and self._config.settings.low_battery_toast
+            ):
+                percent = event.input_event.value
+                self._notifier.show(
+                    "Headset battery low",
+                    (
+                        f"{percent}% remaining. Put the headset on charge."
+                        if percent is not None
+                        else "The battery has reached the warning level. "
+                        "Put the headset on charge."
+                    ),
+                    "warn",
+                )
 
     def _refresh(self) -> None:
         state = self._service.snapshot()
@@ -414,7 +443,7 @@ class HubApp(tk.Tk):
 
         self._service.configure_detection(
             settings.settle_seconds, settings.debounce_seconds,
-            settings.resync_threshold,
+            settings.resync_threshold, settings.low_battery_threshold,
         )
         if settings.read_all_collections != previous.read_all_collections:
             self._service.read_all_collections = settings.read_all_collections
@@ -484,6 +513,7 @@ class HubApp(tk.Tk):
             self._config.settings.settle_seconds,
             self._config.settings.debounce_seconds,
             self._config.settings.resync_threshold,
+            self._config.settings.low_battery_threshold,
         )
         self._service.read_all_collections = self._config.settings.read_all_collections
         self._settings.reload()
@@ -526,4 +556,8 @@ class HubApp(tk.Tk):
             self._service.stop()
         except Exception:
             log.exception("Could not stop the device service cleanly")
+        try:
+            self._notifier.shutdown()
+        except Exception:
+            log.exception("Could not stop the notifier cleanly")
         self.destroy()

@@ -222,6 +222,34 @@ def test_battery_low_fires_once_on_the_crossing():
     assert det.feed(snap(battery=15), now=2.0) == []
 
 
+def test_battery_low_honours_the_configured_threshold():
+    """The Settings spinner decides the level, not the protocol constant."""
+    det = detector(low_battery_threshold=5)
+    det.feed(snap(battery=30), now=0.0)
+    # 20% would trigger the old hardcoded threshold; 5 must not.
+    assert det.feed(snap(battery=20), now=1.0) == []
+    assert ids(det.feed(snap(battery=5), now=2.0)) == [InputId.BATTERY_LOW]
+    assert det.feed(snap(battery=3), now=3.0) == []
+
+
+def test_battery_low_rearms_when_charge_recovers_and_falls_again():
+    det = detector(low_battery_threshold=5)
+    det.feed(snap(battery=30), now=0.0)
+    assert ids(det.feed(snap(battery=5), now=1.0)) == [InputId.BATTERY_LOW]
+    # Charging clears the low state without re-firing the warning.
+    assert ids(det.feed(snap(battery=5, charging=True), now=2.0)) == [
+        InputId.CHARGING_STARTED
+    ]
+    assert det.feed(snap(battery=60, charging=True), now=3.0) == []
+    # Unplugging while the charge is healthy does not warn either.
+    assert ids(det.feed(snap(battery=60, charging=False), now=4.0)) == [
+        InputId.CHARGING_STOPPED
+    ]
+    # Draining back to the threshold warns once more.
+    assert ids(det.feed(snap(battery=5), now=5.0)) == [InputId.BATTERY_LOW]
+    assert det.feed(snap(battery=2), now=6.0) == []
+
+
 def test_charging_transitions():
     det = detector()
     det.feed(snap(charging=False), now=0.0)

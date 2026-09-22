@@ -21,6 +21,11 @@ from .inputs import DEBOUNCE_SECONDS, RESYNC_THRESHOLD, SETTLE_SECONDS
 from .mappings import Profile
 from .protocol import BATTERY_LOW_THRESHOLD
 
+#: The user-facing low-battery warning level. The protocol module's constant
+#: (20) stays as the decoding fallback; the app default is deliberately lower
+#: so the warning fires when there is still a little charge left.
+DEFAULT_LOW_BATTERY_THRESHOLD = 5
+
 log = get_logger("config")
 
 CONFIG_VERSION = 1
@@ -36,7 +41,13 @@ class Settings:
     start_minimized: bool = False
     #: Open every HID collection, not just the FF01:0020 status collection.
     read_all_collections: bool = False
-    low_battery_threshold: int = BATTERY_LOW_THRESHOLD
+    #: Battery percentage at or below which the Battery low input fires and a
+    #: Windows toast warns the user.
+    low_battery_threshold: int = DEFAULT_LOW_BATTERY_THRESHOLD
+    #: Show a Windows notification when the battery reaches the threshold.
+    low_battery_toast: bool = True
+    #: Show a Windows notification every time a binding runs an action.
+    action_toast: bool = True
     settle_seconds: float = SETTLE_SECONDS
     debounce_seconds: float = DEBOUNCE_SECONDS
     resync_threshold: int = RESYNC_THRESHOLD
@@ -50,8 +61,11 @@ class Settings:
             mappings_enabled=bool(self.mappings_enabled),
             start_minimized=bool(self.start_minimized),
             read_all_collections=bool(self.read_all_collections),
-            low_battery_threshold=_clamp_int(self.low_battery_threshold, 5, 50,
-                                             BATTERY_LOW_THRESHOLD),
+            low_battery_toast=bool(self.low_battery_toast),
+            action_toast=bool(self.action_toast),
+            low_battery_threshold=_clamp_int(
+                self.low_battery_threshold, 5, 50, DEFAULT_LOW_BATTERY_THRESHOLD
+            ),
             settle_seconds=_clamp_float(self.settle_seconds, 0.0, 3.0, SETTLE_SECONDS),
             debounce_seconds=_clamp_float(self.debounce_seconds, 0.0, 1.0,
                                           DEBOUNCE_SECONDS),

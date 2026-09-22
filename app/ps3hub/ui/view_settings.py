@@ -60,6 +60,16 @@ class SettingsView(tk.Frame):
             behaviour.body, "Start minimised",
             "Open the window minimised the next time the app starts.",
         )
+        self._battery_toast = self._checkbox(
+            behaviour.body, "Notify when the battery is low",
+            "Show a Windows notification when the charge reaches the low-battery "
+            "level set under Input detection.",
+        )
+        self._action_toast = self._checkbox(
+            behaviour.body, "Notify when a shortcut runs",
+            "Show a Windows notification each time a binding carries out an "
+            "action, naming the control and the action.",
+        )
         self._show_raw = self._checkbox(
             behaviour.body, "Show raw report bytes",
             "Display the hexadecimal report on the dashboard and in diagnostics.",
@@ -96,8 +106,9 @@ class SettingsView(tk.Frame):
             "is run. Raise it if fast wheel turns are being missed.",
         )
         self._battery = self._number(
-            detection.body, "Low battery warning at", "%", 5, 50, 5,
-            "When the battery falls to this level, the Battery low input fires.",
+            detection.body, "Low battery warning at", "%", 5, 50, 1,
+            "When the battery falls to this level, the Battery low input fires "
+            "and, if enabled above, a Windows notification warns you.",
         )
 
         self._read_all = self._checkbox(
@@ -200,6 +211,8 @@ class SettingsView(tk.Frame):
         self._suspend = True
         self._mappings_enabled.set(settings.mappings_enabled)
         self._start_minimized.set(settings.start_minimized)
+        self._battery_toast.set(settings.low_battery_toast)
+        self._action_toast.set(settings.action_toast)
         self._show_raw.set(settings.show_raw_reports)
         self._verbose.set(settings.verbose_logging)
         self._read_all.set(settings.read_all_collections)
@@ -216,6 +229,8 @@ class SettingsView(tk.Frame):
         updated = Settings(
             mappings_enabled=self._mappings_enabled.get(),
             start_minimized=self._start_minimized.get(),
+            low_battery_toast=self._battery_toast.get(),
+            action_toast=self._action_toast.get(),
             read_all_collections=self._read_all.get(),
             low_battery_threshold=self._to_int(self._battery,
                                                current.low_battery_threshold),

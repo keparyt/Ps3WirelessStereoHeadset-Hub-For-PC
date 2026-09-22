@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from typing import Iterable
 
 from .applog import get_logger
-from .protocol import CHAT_BALANCE_STEP, HeadsetSnapshot
+from .protocol import BATTERY_LOW_THRESHOLD, CHAT_BALANCE_STEP, HeadsetSnapshot
 
 log = get_logger("inputs")
 
@@ -210,10 +210,15 @@ class EdgeDetector:
         settle_seconds: float = SETTLE_SECONDS,
         debounce_seconds: float = DEBOUNCE_SECONDS,
         resync_threshold: int = RESYNC_THRESHOLD,
+        low_battery_threshold: int = BATTERY_LOW_THRESHOLD,
     ) -> None:
         self.settle_seconds = settle_seconds
         self.debounce_seconds = debounce_seconds
         self.resync_threshold = resync_threshold
+        #: Battery percentage at or below which the Battery low input fires.
+        # The user picks this in Settings; the protocol constant is only the
+        # fallback.
+        self.low_battery_threshold = low_battery_threshold
         self._previous: HeadsetSnapshot | None = None
         self._seeded = False
         self._settle_until = 0.0
@@ -386,7 +391,9 @@ class EdgeDetector:
                     else InputId.CHARGING_STOPPED
                 )
             )
-        if current.battery_low and not previous.battery_low:
+        if current.battery_low_at(self.low_battery_threshold) and not (
+            previous.battery_low_at(self.low_battery_threshold)
+        ):
             events.append(
                 InputEvent(InputId.BATTERY_LOW, value=current.battery_percent)
             )

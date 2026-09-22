@@ -152,6 +152,7 @@ class HeadsetService:
         settle_seconds: float | None = None,
         debounce_seconds: float | None = None,
         resync_threshold: int | None = None,
+        low_battery_threshold: int | None = None,
     ) -> None:
         self._state = ServiceState()
         self._lock = threading.RLock()
@@ -173,6 +174,8 @@ class HeadsetService:
             detector_kwargs["debounce_seconds"] = debounce_seconds
         if resync_threshold is not None:
             detector_kwargs["resync_threshold"] = resync_threshold
+        if low_battery_threshold is not None:
+            detector_kwargs["low_battery_threshold"] = low_battery_threshold
         self._detector = EdgeDetector(**detector_kwargs)
 
     # ------------------------------------------------------------ plumbing --
@@ -181,11 +184,14 @@ class HeadsetService:
         self._input_handler = handler
 
     def configure_detection(
-        self, settle_seconds: float, debounce_seconds: float, resync_threshold: int
+        self, settle_seconds: float, debounce_seconds: float,
+        resync_threshold: int, low_battery_threshold: int | None = None,
     ) -> None:
         self._detector.settle_seconds = settle_seconds
         self._detector.debounce_seconds = debounce_seconds
         self._detector.resync_threshold = resync_threshold
+        if low_battery_threshold is not None:
+            self._detector.low_battery_threshold = low_battery_threshold
 
     def snapshot(self) -> ServiceState:
         with self._lock:

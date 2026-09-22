@@ -169,6 +169,7 @@ class HeadsetService:
         self._fingerprints: dict[tuple[int, int, int, int], ReportFingerprint] = {}
         self._scanner: threading.Thread | None = None
         self._dispatcher: threading.Thread | None = None
+        self._scan_request = threading.Event()
         self._input_handler = input_handler
         self.read_all_collections = read_all_collections
 
@@ -254,6 +255,7 @@ class HeadsetService:
             return
 
         self._stop.clear()
+        self._scan_request.clear()
         self._dispatcher = threading.Thread(
             target=self._dispatch_loop, name="hid-dispatch", daemon=True
         )
@@ -264,9 +266,16 @@ class HeadsetService:
         self._scanner.start()
         log.info("Headset service started (target %04X:%04X)", TARGET_VID, TARGET_PID)
 
+    def request_scan(self) -> None:
+        """Request an immediate device enumeration from the scanner thread."""
+        if self._scanner is not None and self._scanner.is_alive():
+            self._scan_request.set()
+            log.info("Device refresh requested")
+
     def stop(self) -> None:
         log.info("Stopping headset service")
         self._stop.set()
+        self._scan_request.set()
         for reader in list(self._readers.values()):
             try:
                 reader.stop()
@@ -318,7 +327,11 @@ class HeadsetService:
 
     def _scan_loop(self) -> None:
         self._scan_once()
-        while not self._stop.wait(SCAN_INTERVAL):
+        while not self._stop.is_set():
+            self._scan_request.wait(SCAN_INTERVAL)
+            if self._stop.is_set():
+                break
+            self._scan_request.clear()
             try:
                 self._scan_once()
             except Exception as exc:  # pragma: no cover - defensive

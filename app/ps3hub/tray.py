@@ -216,7 +216,7 @@ def format_tray_status(state: Any) -> str:
 
     snapshot = getattr(state, "snapshot", None)
     if snapshot is None:
-        return "PS3 Headset Hub • Receiver connected • Headset not connected"
+        return "PS3 Headset Hub • Receiver connected • Waiting for headset telemetry"
 
     connected = bool(getattr(snapshot, "headset_connected", False))
     parts = [

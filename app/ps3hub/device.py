@@ -427,7 +427,9 @@ class HeadsetService:
             "label": label,
         }
         if reader_cls is HidApiReader:
-            reader_kwargs["read_size"] = 512
+            reader_kwargs["read_size"] = (
+                8 if is_status_collection(usage_page, usage) else 512
+            )
 
         reader = reader_cls(
             info.get("path"),

@@ -151,7 +151,7 @@ def format_tray_status(state: Any) -> str:
     elif getattr(snapshot, "charging", False):
         parts.append("Charging")
 
-    return "".join(parts)
+    return " • ".join(parts)
 
 
 class TrayManager:

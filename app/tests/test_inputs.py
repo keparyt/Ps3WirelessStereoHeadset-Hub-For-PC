@@ -83,10 +83,21 @@ def test_identical_report_produces_nothing():
     assert det.feed(snap(volume=5), now=1.0) == []
 
 
-def test_large_volume_jump_is_treated_as_dropped_reports():
+def test_large_volume_jump_replays_the_authoritative_state_delta():
     det = detector()
-    det.feed(snap(volume=1), now=0.0)
-    assert det.feed(snap(volume=9), now=1.0) == []
+    det.feed(snap(volume=0), now=0.0)
+    events = det.feed(snap(volume=5), now=0.01)
+    assert ids(events) == [InputId.VOLUME_UP]
+    assert events[0].repeat == 5
+
+
+def test_rapid_volume_reports_are_not_debounced():
+    det = EdgeDetector(settle_seconds=0.0, debounce_seconds=0.25)
+    det.feed(snap(volume=0), now=0.0)
+    assert ids(det.feed(snap(volume=1), now=0.010)) == [InputId.VOLUME_UP]
+    assert ids(det.feed(snap(volume=2), now=0.020)) == [InputId.VOLUME_UP]
+    assert ids(det.feed(snap(volume=3), now=0.030)) == [InputId.VOLUME_UP]
+    assert ids(det.feed(snap(volume=4), now=0.040)) == [InputId.VOLUME_UP]
 
 
 def test_volume_at_the_top_of_the_range_stops_producing_events():

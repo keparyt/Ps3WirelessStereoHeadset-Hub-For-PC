@@ -1,14 +1,14 @@
 """Catch-all HID action handling for every inbound receiver report.
 
-This is intentionally a thin compatibility layer: the normal B0 state decoder
-still owns headset state, while consumer-control reports are treated as real
-commands even when the previous state did not change.
+This compatibility layer keeps the normal B0 state decoder for headset state,
+while opening every HID collection and treating direct consumer-control reports
+as real commands. Repeated identical command reports are never debounced.
 """
 from __future__ import annotations
 
 from .applog import get_logger
 from .device import HeadsetService
-from .inputs import DESCRIPTOR_BY_ID, INPUT_DESCRIPTORS, Category, InputDescriptor, InputEvent, InputId
+from .inputs import DESCRIPTOR_BY_ID, INPUT_DESCRIPTORS, Category, InputDescriptor, InputEvent
 
 log = get_logger("report_actions")
 
@@ -20,6 +20,13 @@ CONSUMER_USAGE_TO_INPUT = {
     0x00E2: ("consumer_mute", "Mute"),
     0x00E9: ("consumer_volume_up", "Consumer volume up"),
     0x00EA: ("consumer_volume_down", "Consumer volume down"),
+}
+
+# Compatibility aliases to the project's existing default bindings.
+INPUT_FALLBACKS = {
+    "consumer_next": "chatmix_up",
+    "consumer_previous": "chatmix_down",
+    "consumer_play_pause": "vss_button",
 }
 
 
@@ -46,29 +53,45 @@ def _install_descriptors() -> None:
 
 def _consumer_usages(report: bytes) -> list[tuple[str, int]]:
     found: list[tuple[str, int]] = []
-    # Consumer-control reports commonly contain a report ID followed by one or
-    # more 16-bit HID usages. Check every adjacent pair so report-ID/padding
-    # variants cannot hide a real command.
+    # Check every adjacent pair in both byte orders. This handles common
+    # report-ID and padding variants without assuming one exact descriptor.
     for index in range(max(0, len(report) - 1)):
-        usage = report[index] | (report[index + 1] << 8)
-        mapping = CONSUMER_USAGE_TO_INPUT.get(usage)
-        if mapping is not None:
-            found.append((mapping[0], usage))
-    # Also accept the reverse byte order as a defensive diagnostic path.
-    for index in range(max(0, len(report) - 1)):
-        usage = (report[index] << 8) | report[index + 1]
-        mapping = CONSUMER_USAGE_TO_INPUT.get(usage)
-        if mapping is not None:
-            item = (mapping[0], usage)
-            if item not in found:
-                found.append(item)
+        for usage in (
+            report[index] | (report[index + 1] << 8),
+            (report[index] << 8) | report[index + 1],
+        ):
+            mapping = CONSUMER_USAGE_TO_INPUT.get(usage)
+            if mapping is not None:
+                item = (mapping[0], usage)
+                if item not in found:
+                    found.append(item)
     return found
 
 
 def _patch_select() -> None:
-    # The receiver exposes several HID collections. Never silently ignore one:
-    # the Consumer Control collection is where media commands can arrive.
+    # Never silently ignore a HID collection. Media commands commonly use the
+    # Consumer Control collection rather than the B0 status collection.
     HeadsetService._select = staticmethod(lambda devices, read_all: devices)
+
+
+def _patch_profile_lookup() -> None:
+    # Existing profiles already bind chat-mix up/down and VSS to media actions.
+    # Let newly decoded direct consumer commands inherit those bindings without
+    # requiring the user to recreate their profile.
+    from .mappings import Profile
+    original = Profile.bound_for
+    if getattr(original, "_report_actions_patched", False):
+        return
+
+    def bound_for(self, input_id: str):
+        mapping = original(self, input_id)
+        if mapping is not None:
+            return mapping
+        fallback_id = INPUT_FALLBACKS.get(input_id)
+        return original(self, fallback_id) if fallback_id else None
+
+    bound_for._report_actions_patched = True
+    Profile.bound_for = bound_for
 
 
 def _patch_process() -> None:
@@ -89,15 +112,18 @@ def _patch_process() -> None:
                         input_id,
                         repeat=1,
                         value=usage_code,
-                        detail=f"consumer usage 0x{usage_code:04X}; raw={report.hex(' ').upper()}",
+                        detail=(
+                            f"consumer usage 0x{usage_code:04X}; "
+                            f"raw={report.hex(' ').upper()}"
+                        ),
                     )
                     log.info(
                         "ACTION REPORT | collection=%04X:%04X | usage=0x%04X | %s",
                         usage_page, usage, usage_code, report.hex(" ").upper(),
                     )
-                    # Deliberately bypass EdgeDetector admission. A HID
-                    # consumer report IS the edge. Every received command is
-                    # delivered, including repeated identical reports.
+                    # The report itself is the edge. Do not pass it through the
+                    # state-change/debounce logic, so every command report is
+                    # delivered, including identical repeated reports.
                     self._handle_input(event)
             else:
                 log.info(
@@ -114,5 +140,6 @@ def _patch_process() -> None:
 def install() -> None:
     _install_descriptors()
     _patch_select()
+    _patch_profile_lookup()
     _patch_process()
     log.info("Catch-all HID report/action handling installed")

@@ -59,16 +59,16 @@ if IS_WINDOWS:
     _LR_DEFAULTSIZE = 0x00000040
     _IDI_APPLICATION = 32512
 
-    _HWND_MESSAGE = wintypes.HWND(-3)
+    _HWND_MESSAGE = _HWND(-3)
 
     class NOTIFYICONDATAW(ctypes.Structure):
         _fields_ = [
             ("cbSize", wintypes.DWORD),
-            ("hWnd", wintypes.HWND),
+            ("hWnd", _HWND),
             ("uID", wintypes.UINT),
             ("uFlags", wintypes.UINT),
             ("uCallbackMessage", wintypes.UINT),
-            ("hIcon", wintypes.HICON),
+            ("hIcon", _HICON),
             ("szTip", wintypes.WCHAR * 128),
             ("dwState", wintypes.DWORD),
             ("dwStateMask", wintypes.DWORD),
@@ -85,10 +85,18 @@ if IS_WINDOWS:
             ("y", wintypes.LONG),
         ]
 
-    # Python 3.10/older wintypes builds do not always expose every
-    # Windows handle alias even though the underlying Win32 types are all
-    # pointer-sized HANDLE values. Keep the tray compatible with those builds.
-    _HCURSOR = getattr(wintypes, "HCURSOR", wintypes.HANDLE)
+    # Some Python 3.10 wintypes builds do not expose every Win32
+    # alias (notably LRESULT/HCURSOR). Define compatibility aliases here
+    # instead of depending on the exact CPython version.
+    _HANDLE = wintypes.HANDLE
+    _HINSTANCE = getattr(wintypes, "HINSTANCE", _HANDLE)
+    _HICON = getattr(wintypes, "HICON", _HANDLE)
+    _HCURSOR = getattr(wintypes, "HCURSOR", _HANDLE)
+    _HBRUSH = getattr(wintypes, "HBRUSH", _HANDLE)
+    _HMENU = getattr(wintypes, "HMENU", _HANDLE)
+    _HWND = getattr(wintypes, "HWND", _HANDLE)
+    _HGLOBAL = getattr(wintypes, "HGLOBAL", _HANDLE)
+    _LRESULT = getattr(wintypes, "LRESULT", ctypes.c_ssize_t)
 
     class WNDCLASSW(ctypes.Structure):
         _fields_ = [
@@ -96,17 +104,17 @@ if IS_WINDOWS:
             ("lpfnWndProc", ctypes.c_void_p),
             ("cbClsExtra", ctypes.c_int),
             ("cbWndExtra", ctypes.c_int),
-            ("hInstance", wintypes.HINSTANCE),
-            ("hIcon", wintypes.HICON),
+            ("hInstance", _HINSTANCE),
+            ("hIcon", _HICON),
             ("hCursor", _HCURSOR),
-            ("hbrBackground", wintypes.HBRUSH),
+            ("hbrBackground", _HBRUSH),
             ("lpszMenuName", wintypes.LPCWSTR),
             ("lpszClassName", wintypes.LPCWSTR),
         ]
 
     _WNDPROC = ctypes.WINFUNCTYPE(
-        wintypes.LRESULT,
-        wintypes.HWND,
+        _LRESULT,
+        _HWND,
         wintypes.UINT,
         wintypes.WPARAM,
         wintypes.LPARAM,
@@ -123,50 +131,50 @@ if IS_WINDOWS:
     _user32.CreateWindowExW.argtypes = [
         wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
         ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
-        wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID,
+        _HWND, _HMENU, _HINSTANCE, wintypes.LPVOID,
     ]
-    _user32.CreateWindowExW.restype = wintypes.HWND
+    _user32.CreateWindowExW.restype = _HWND
     _user32.LoadImageW.argtypes = [
-        wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT,
+        _HINSTANCE, wintypes.LPCWSTR, wintypes.UINT,
         ctypes.c_int, ctypes.c_int, wintypes.UINT,
     ]
     _user32.LoadImageW.restype = wintypes.HANDLE
-    _user32.LoadIconW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR]
-    _user32.LoadIconW.restype = wintypes.HICON
+    _user32.LoadIconW.argtypes = [_HINSTANCE, wintypes.LPCWSTR]
+    _user32.LoadIconW.restype = _HICON
     _user32.PeekMessageW.argtypes = [
-        ctypes.POINTER(wintypes.MSG), wintypes.HWND,
+        ctypes.POINTER(wintypes.MSG), _HWND,
         wintypes.UINT, wintypes.UINT, wintypes.UINT,
     ]
     _user32.PeekMessageW.restype = wintypes.BOOL
     _user32.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
     _user32.TranslateMessage.restype = wintypes.BOOL
     _user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
-    _user32.DispatchMessageW.restype = wintypes.LRESULT
-    _user32.DestroyWindow.argtypes = [wintypes.HWND]
+    _user32.DispatchMessageW.restype = _LRESULT
+    _user32.DestroyWindow.argtypes = [_HWND]
     _user32.DestroyWindow.restype = wintypes.BOOL
     _user32.PostMessageW.argtypes = [
-        wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+        _HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
     ]
     _user32.PostMessageW.restype = wintypes.BOOL
     _user32.DefWindowProcW.argtypes = [
-        wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+        _HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
     ]
-    _user32.DefWindowProcW.restype = wintypes.LRESULT
-    _user32.CreatePopupMenu.restype = wintypes.HMENU
+    _user32.DefWindowProcW.restype = _LRESULT
+    _user32.CreatePopupMenu.restype = _HMENU
     _user32.AppendMenuW.argtypes = [
-        wintypes.HMENU, wintypes.UINT, wintypes.UINT, wintypes.LPCWSTR,
+        _HMENU, wintypes.UINT, wintypes.UINT, wintypes.LPCWSTR,
     ]
     _user32.AppendMenuW.restype = wintypes.BOOL
     _user32.GetCursorPos.argtypes = [ctypes.POINTER(POINT)]
     _user32.GetCursorPos.restype = wintypes.BOOL
-    _user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+    _user32.SetForegroundWindow.argtypes = [_HWND]
     _user32.SetForegroundWindow.restype = wintypes.BOOL
     _user32.TrackPopupMenu.argtypes = [
-        wintypes.HMENU, wintypes.UINT, ctypes.c_int, ctypes.c_int,
-        wintypes.UINT, wintypes.HWND, wintypes.LPVOID,
+        _HMENU, wintypes.UINT, ctypes.c_int, ctypes.c_int,
+        wintypes.UINT, _HWND, wintypes.LPVOID,
     ]
     _user32.TrackPopupMenu.restype = wintypes.UINT
-    _user32.DestroyMenu.argtypes = [wintypes.HMENU]
+    _user32.DestroyMenu.argtypes = [_HMENU]
     _user32.DestroyMenu.restype = wintypes.BOOL
     _shell32.Shell_NotifyIconW.argtypes = [
         wintypes.DWORD, ctypes.POINTER(NOTIFYICONDATAW),
@@ -283,7 +291,7 @@ class TrayManager:
         if IS_WINDOWS and self._hwnd is not None:
             try:
                 _user32.PostMessageW(
-                    wintypes.HWND(self._hwnd), _WM_CLOSE, 0, 0
+                    _HWND(self._hwnd), _WM_CLOSE, 0, 0
                 )
             except Exception:
                 pass
@@ -369,7 +377,7 @@ class TrayManager:
             try:
                 if self._hwnd is not None:
                     self._delete_icon()
-                    _user32.DestroyWindow(wintypes.HWND(self._hwnd))
+                    _user32.DestroyWindow(_HWND(self._hwnd))
             except Exception:
                 log.debug("System tray cleanup failed", exc_info=True)
 
@@ -405,10 +413,10 @@ class TrayManager:
     def _make_data(self) -> NOTIFYICONDATAW:
         data = NOTIFYICONDATAW()
         data.cbSize = ctypes.sizeof(NOTIFYICONDATAW)
-        data.hWnd = wintypes.HWND(self._hwnd)
+        data.hWnd = _HWND(self._hwnd)
         data.uID = 1
         data.uCallbackMessage = _WM_TRAY
-        data.hIcon = wintypes.HICON(self._icon_handle or 0)
+        data.hIcon = _HICON(self._icon_handle or 0)
         return data
 
     def _add_or_update_icon(self, initial: bool = False) -> bool:
@@ -475,16 +483,16 @@ class TrayManager:
                 return 0
 
         if message == _WM_CLOSE:
-            _user32.DestroyWindow(wintypes.HWND(hwnd))
+            _user32.DestroyWindow(_HWND(hwnd))
             return 0
 
         if message == _WM_DESTROY:
             return _user32.DefWindowProcW(
-                wintypes.HWND(hwnd), message, wparam, lparam
+                _HWND(hwnd), message, wparam, lparam
             )
 
         return _user32.DefWindowProcW(
-            wintypes.HWND(hwnd), message, wparam, lparam
+            _HWND(hwnd), message, wparam, lparam
         )
 
     def _show_menu(self, hwnd: int) -> None:
@@ -510,17 +518,17 @@ class TrayManager:
             if not _user32.GetCursorPos(ctypes.byref(point)):
                 return
 
-            _user32.SetForegroundWindow(wintypes.HWND(hwnd))
+            _user32.SetForegroundWindow(_HWND(hwnd))
             command = _user32.TrackPopupMenu(
                 menu,
                 _TPM_RIGHTBUTTON | _TPM_NONOTIFY | _TPM_RETURNCMD,
                 point.x,
                 point.y,
                 0,
-                wintypes.HWND(hwnd),
+                _HWND(hwnd),
                 None,
             )
-            _user32.PostMessageW(wintypes.HWND(hwnd), _WM_NULL, 0, 0)
+            _user32.PostMessageW(_HWND(hwnd), _WM_NULL, 0, 0)
 
             handlers = {
                 OPEN_COMMAND: self._on_open,

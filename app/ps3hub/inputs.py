@@ -305,13 +305,25 @@ class EdgeDetector:
         # guessed burst. If several reports were coalesced by Windows, the
         # resulting delta is the number of volume steps we can safely replay.
         input_id = InputId.VOLUME_UP if delta > 0 else InputId.VOLUME_DOWN
+
+        # Do not collapse a multi-step movement into one InputEvent with
+        # repeat=N. The rest of the application treats an InputEvent as one
+        # discrete command, and the user needs to see/send every command
+        # separately. If the HID layer gives us 0 -> 3 in one dispatch pass,
+        # the receiver has still told us that three volume steps occurred.
+        # Reconstruct those discrete steps from the authoritative state.
+        direction = 1 if delta > 0 else -1
         return [
             InputEvent(
                 input_id,
-                repeat=abs(delta),
-                value=after,
-                detail=f"step {before} -> {after}",
+                repeat=1,
+                value=before + direction * offset,
+                detail=(
+                    f"step {before + direction * (offset - 1)} -> "
+                    f"{before + direction * offset}"
+                ),
             )
+            for offset in range(1, abs(delta) + 1)
         ]
 
     def _chatmix_events(

@@ -347,18 +347,22 @@ class EdgeDetector:
             ]
 
         # At a physical boundary, the numeric state cannot move further.
-        # The raw byte5 command marker tells us whether the physical control
-        # was turned UP or DOWN. Never inherit a previous chat-mix direction.
+        # A new command is represented by a transition in the observed byte5
+        # marker. A repeated telemetry packet with the same marker is NOT a new
+        # click, which prevents normal status traffic from becoming media input.
         if after in (VOLUME_MIN, VOLUME_MAX):
+            previous_marker = previous.unknown_bytes[0]
             marker = current.unknown_bytes[0]
+            if marker == previous_marker:
+                return []
             if marker == OBSERVED_VOLUME_UP_MARKER:
                 return [InputEvent(
                     InputId.VOLUME_UP,
                     repeat=1,
                     value=after,
                     detail=(
-                        f"{after} -> {after} (volume boundary repeat; "
-                        f"byte5=0x{marker:02X})"
+                        f"{after} -> {after} (volume boundary command; "
+                        f"byte5 0x{previous_marker:02X} -> 0x{marker:02X})"
                     ),
                 )]
             if marker == OBSERVED_VOLUME_DOWN_MARKER:
@@ -367,8 +371,8 @@ class EdgeDetector:
                     repeat=1,
                     value=after,
                     detail=(
-                        f"{after} -> {after} (volume boundary repeat; "
-                        f"byte5=0x{marker:02X})"
+                        f"{after} -> {after} (volume boundary command; "
+                        f"byte5 0x{previous_marker:02X} -> 0x{marker:02X})"
                     ),
                 )]
         return []
@@ -394,17 +398,21 @@ class EdgeDetector:
             ]
 
         # At chat-mix min/max, the numeric state cannot move further.
-        # Only a chat-mix marker may create the additional mapped command.
+        # A new command is represented by a transition in the observed byte5
+        # marker. Repeated status packets with the same marker are not clicks.
         if after in (CHAT_BALANCE_MIN, CHAT_BALANCE_MAX):
+            previous_marker = previous.unknown_bytes[0]
             marker = current.unknown_bytes[0]
+            if marker == previous_marker:
+                return []
             if marker == OBSERVED_CHATMIX_UP_MARKER:
                 return [InputEvent(
                     InputId.CHATMIX_UP,
                     repeat=1,
                     value=after,
                     detail=(
-                        f"{after} -> {after} (chat boundary repeat; "
-                        f"byte5=0x{marker:02X})"
+                        f"{after} -> {after} (chat boundary command; "
+                        f"byte5 0x{previous_marker:02X} -> 0x{marker:02X})"
                     ),
                 )]
             if marker == OBSERVED_CHATMIX_DOWN_MARKER:
@@ -413,8 +421,8 @@ class EdgeDetector:
                     repeat=1,
                     value=after,
                     detail=(
-                        f"{after} -> {after} (chat boundary repeat; "
-                        f"byte5=0x{marker:02X})"
+                        f"{after} -> {after} (chat boundary command; "
+                        f"byte5 0x{previous_marker:02X} -> 0x{marker:02X})"
                     ),
                 )]
         return []

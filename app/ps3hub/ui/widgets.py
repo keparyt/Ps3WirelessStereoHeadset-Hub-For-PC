@@ -14,6 +14,7 @@ drawn on a Canvas. Two deliberate choices:
 from __future__ import annotations
 
 import tkinter as tk
+import weakref
 from tkinter import ttk
 from typing import Callable
 
@@ -325,7 +326,15 @@ class NavButton(tk.Frame):
 
 
 class ScrollFrame(tk.Frame):
-    """A vertically scrollable container with a themed scrollbar."""
+    """A vertically scrollable container with a themed scrollbar.
+
+    Wheel handling is centralized because several views can contain nested
+    ScrollFrames. The innermost frame under the pointer gets the event, so
+    nested menus do not steal the first scroll and then appear to stop.
+    """
+
+    _instances: weakref.WeakSet = weakref.WeakSet()
+    _wheel_binding_installed = False
 
     def __init__(self, master, bg: str = ABYSS) -> None:
         super().__init__(master, bg=bg)
@@ -344,6 +353,8 @@ class ScrollFrame(tk.Frame):
 
         self.interior.bind("<Configure>", self._on_interior)
         self._canvas.bind("<Configure>", self._on_canvas)
+
+        self._instances.add(self)
         self.bind_all_wheel()
 
     def _on_scroll_set(self, first: str, last: str) -> None:
@@ -362,42 +373,72 @@ class ScrollFrame(tk.Frame):
         self._canvas.itemconfigure(self._window, width=event.width)
 
     def bind_all_wheel(self) -> None:
-        # Tk mouse-wheel events are delivered to the widget under the pointer;
-        # binding only the Canvas/interior therefore fails when the pointer is
-        # over a Label, Checkbutton, Spinbox, etc. Use a class-wide binding and
-        # let each ScrollFrame handle the event only when its own content owns it.
-        self.bind_all("<MouseWheel>", self._wheel, add="+")
-        self.bind_all("<Button-4>", self._wheel, add="+")
-        self.bind_all("<Button-5>", self._wheel, add="+")
+        # Install one application-wide handler. Per-ScrollFrame bind_all
+        # callbacks caused nested scroll areas to compete for the same wheel
+        # event and made scrolling appear to stop after a single unit.
+        if not self._wheel_binding_installed:
+            self.bind_all("<MouseWheel>", self._dispatch_wheel, add="+")
+            self.bind_all("<Button-4>", self._dispatch_wheel, add="+")
+            self.bind_all("<Button-5>", self._dispatch_wheel, add="+")
+            type(self)._wheel_binding_installed = True
 
-    def _belongs_to_this_scrollframe(self, widget: tk.Misc) -> bool:
+    @classmethod
+    def _dispatch_wheel(cls, event) -> str | None:
+        owner = None
+        best_depth = None
+
+        for frame in tuple(cls._instances):
+            depth = frame._distance_to_interior(event.widget)
+            if depth is None:
+                continue
+            if best_depth is None or depth < best_depth:
+                owner = frame
+                best_depth = depth
+
+        if owner is None:
+            return None
+
+        return owner._scroll_from_wheel(event)
+
+    def _distance_to_interior(self, widget: tk.Misc) -> int | None:
         current = widget
+        depth = 0
         interior_path = str(self.interior)
 
         while current is not None:
             try:
                 if str(current) == interior_path:
-                    return True
+                    return depth
+
                 parent = current.winfo_parent()
                 if not parent:
-                    return False
+                    return None
+
                 current = current.nametowidget(parent)
+                depth += 1
             except (tk.TclError, AttributeError):
-                return False
-        return False
+                return None
 
-    def _wheel(self, event) -> str | None:
-        if not self._belongs_to_this_scrollframe(event.widget):
-            return None
+        return None
 
+    def _scroll_from_wheel(self, event) -> str:
         if getattr(event, "num", None) == 4:
-            delta = -1
+            direction = -1
+            units = 1
         elif getattr(event, "num", None) == 5:
-            delta = 1
+            direction = 1
+            units = 1
         else:
-            delta = -1 if event.delta > 0 else 1
+            delta = int(getattr(event, "delta", 0) or 0)
+            if delta == 0:
+                return "break"
 
-        self._canvas.yview_scroll(delta, "units")
+            direction = -1 if delta > 0 else 1
+            # Windows normally reports 120 per wheel notch. Respect larger
+            # deltas so a fast wheel movement can advance more than one unit.
+            units = max(1, abs(delta) // 120)
+
+        self._canvas.yview_scroll(direction * units, "units")
         return "break"
 
     def scroll_to_top(self) -> None:

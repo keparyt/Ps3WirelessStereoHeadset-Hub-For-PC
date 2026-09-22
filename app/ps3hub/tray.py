@@ -30,6 +30,7 @@ if IS_WINDOWS:
     from ctypes import wintypes
 
     _user32 = ctypes.WinDLL("user32", use_last_error=True)
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     _shell32 = ctypes.WinDLL("shell32", use_last_error=True)
 
     # Some Python 3.10 wintypes builds do not expose every Win32
@@ -123,9 +124,10 @@ if IS_WINDOWS:
     # ctypes defaults pointer-returning Win32 calls to a 32-bit C int unless
     # their signatures are declared. Explicit prototypes keep this safe on
     # 64-bit Windows and also allow Unicode strings to cross the boundary.
-    _user32.GetCurrentThreadId.restype = wintypes.DWORD
-    _user32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
-    _user32.GetModuleHandleW.restype = wintypes.HMODULE
+    _kernel32.GetCurrentThreadId.argtypes = []
+    _kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+    _kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+    _kernel32.GetModuleHandleW.restype = wintypes.HMODULE
     _user32.RegisterClassW.argtypes = [ctypes.POINTER(WNDCLASSW)]
     _user32.RegisterClassW.restype = wintypes.ATOM
     _user32.CreateWindowExW.argtypes = [
@@ -305,10 +307,10 @@ class TrayManager:
             return
 
         try:
-            self._thread_id = int(_user32.GetCurrentThreadId())
+            self._thread_id = int(_kernel32.GetCurrentThreadId())
             self._callback = _WNDPROC(self._window_proc)
 
-            hinstance = _user32.GetModuleHandleW(None)
+            hinstance = _kernel32.GetModuleHandleW(None)
             class_name = f"PS3HeadsetHubTray_{self._thread_id:x}"
             self._class_name = class_name
 

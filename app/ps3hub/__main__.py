@@ -14,6 +14,17 @@ def main() -> int:
     from . import APP_NAME, APP_VERSION
     log.info("Starting %s %s on %s", APP_NAME, APP_VERSION, sys.platform)
 
+    # Install the report/action compatibility layer before HeadsetService is
+    # constructed.  This is deliberately imported at startup: merely having
+    # report_actions.py in the package does not activate it.
+    try:
+        from .report_actions import install as install_report_actions
+        install_report_actions()
+    except Exception:
+        log.exception("The HID report/action layer could not be installed")
+        _fatal("The HID report/action layer could not be loaded. See the log for details.")
+        return 1
+
     try:
         from .ui.app import HubApp
     except Exception:

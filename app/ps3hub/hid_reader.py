@@ -1,7 +1,8 @@
 """Windows receive-only HID reader for Sony 12BA:0035.
 
-This is the proven transport from the proof of concept and is deliberately
-kept close to the original. The overlapped ``ReadFile`` design is the reason
+This is the native diagnostic transport retained from the proof of concept.
+The application prefers the hidapi interrupt-IN path because it matches the
+reference driver's normal HID raw-event transport. The overlapped ``ReadFile`` design is the reason
 the application can be closed, and the receiver unplugged, without a wedged
 thread: a synchronous read blocks forever inside the HID class driver and
 cannot be interrupted.
@@ -27,8 +28,14 @@ from __future__ import annotations
 import ctypes
 import os
 import threading
+import time
 from ctypes import wintypes
 from typing import Callable
+
+try:
+    import hid as _hidapi
+except Exception:
+    _hidapi = None  # type: ignore[assignment]
 
 from .applog import get_logger
 
@@ -174,17 +181,15 @@ if _hid is not None:
     _HidD_SetNumInputBuffers.argtypes = [wintypes.HANDLE, wintypes.ULONG]
     _HidD_SetNumInputBuffers.restype = wintypes.BOOLEAN
 
-    _HidD_GetInputReport = _hid.HidD_GetInputReport
-    _HidD_GetInputReport.argtypes = [
-        wintypes.HANDLE,
-        wintypes.LPVOID,
-        wintypes.ULONG,
-    ]
-    _HidD_GetInputReport.restype = wintypes.BOOLEAN
 
 
 def native_windows_available() -> bool:
     return os.name == "nt" and _kernel32 is not None and _hid is not None
+
+
+def hidapi_available() -> bool:
+    """Return whether the Python hidapi backend is importable."""
+    return _hidapi is not None
 
 
 def windows_path(path: object) -> str:
@@ -202,6 +207,143 @@ def _hv(handle: object) -> int:
         return int(handle)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return 0
+
+
+class HidApiReader:
+    """Receive-only HID interrupt-IN reader using Python hidapi.
+
+    This is the preferred Windows transport for the PS3 receiver because the
+    reference Linux driver consumes the HID raw-event stream directly. hidapi
+    opens the same HID collection path and exposes the incoming interrupt-IN
+    reports without issuing output, feature, or control requests.
+    """
+
+    POLL_INTERVAL_SECONDS = 0.005
+    DEFAULT_READ_SIZE = 512
+
+    def __init__(
+        self,
+        path: object,
+        on_report: Callable[[bytes], None],
+        on_error: Callable[[Exception], None] | None = None,
+        label: str = "",
+        read_size: int = DEFAULT_READ_SIZE,
+    ) -> None:
+        if _hidapi is None:
+            raise OSError("Python hidapi is not installed")
+        self.path = path
+        self.label = label or str(path)[-40:]
+        self.on_report = on_report
+        self.on_error = on_error
+        self.read_size = max(8, int(read_size))
+        self.stop_event = threading.Event()
+        self.thread: threading.Thread | None = None
+        self.device = None
+        self.report_count = 0
+        self._lock = threading.Lock()
+        self._stopped = False
+
+    def open(self) -> None:
+        if _hidapi is None:
+            raise OSError("Python hidapi is not installed")
+
+        device = _hidapi.device()
+        try:
+            device.open_path(self.path)
+            device.set_nonblocking(True)
+        except Exception:
+            try:
+                device.close()
+            except Exception:
+                pass
+            raise
+
+        with self._lock:
+            self.device = device
+            self._stopped = False
+
+        log.info("Opened %s via hidapi (nonblocking interrupt-IN)", self.label)
+
+    def start(self) -> None:
+        self.stop_event.clear()
+        self.open()
+        self.thread = threading.Thread(
+            target=self._worker,
+            name=f"hidapi-reader-{self.label}",
+            daemon=True,
+        )
+        self.thread.start()
+
+    def _worker(self) -> None:
+        with self._lock:
+            device = self.device
+
+        if device is None:
+            log.error("hidapi reader started without a device: %s", self.label)
+            return
+
+        try:
+            while not self.stop_event.is_set():
+                try:
+                    report = device.read(self.read_size)
+                except Exception as exc:
+                    if self.stop_event.is_set():
+                        return
+                    log.error("%s: hidapi read failed: %s", self.label, exc)
+                    if self.on_error is not None:
+                        try:
+                            self.on_error(exc)
+                        except Exception:
+                            log.exception("hidapi error callback raised")
+                    return
+
+                if report:
+                    self.report_count += 1
+                    payload = bytes(report)
+                    try:
+                        self.on_report(payload)
+                    except Exception as exc:
+                        log.exception(
+                            "hidapi report callback raised on %s: %s",
+                            self.label,
+                            exc,
+                        )
+
+                time.sleep(self.POLL_INTERVAL_SECONDS)
+        except Exception as exc:
+            if self.stop_event.is_set():
+                return
+            log.exception("Unhandled hidapi reader failure on %s", self.label)
+            if self.on_error is not None:
+                try:
+                    self.on_error(exc)
+                except Exception:
+                    log.exception("hidapi error callback raised")
+
+    def stop(self) -> None:
+        if self.stop_event.is_set() and self._stopped:
+            return
+
+        self.stop_event.set()
+        with self._lock:
+            device = self.device
+            self.device = None
+            self._stopped = True
+
+        if device is not None:
+            try:
+                device.close()
+            except Exception:
+                pass
+
+        if self.thread is not None and self.thread is not threading.current_thread():
+            self.thread.join(timeout=1.5)
+
+        log.debug("hidapi reader stopped: %s", self.label)
+
+    @property
+    def alive(self) -> bool:
+        return self.thread is not None and self.thread.is_alive()
 
 
 class NativeWindowsHIDReader:

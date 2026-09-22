@@ -9,7 +9,7 @@ from ps3hub.protocol import HeadsetSnapshot
 
 
 def snap(volume=5, balance=50, battery=80, charging=False, vss=False,
-         mic=False, linked=True) -> HeadsetSnapshot:
+         mic=False, linked=True, byte5=0x11) -> HeadsetSnapshot:
     return HeadsetSnapshot(
         volume_level=volume,
         volume_percent=None if volume is None else volume * 10,
@@ -19,6 +19,7 @@ def snap(volume=5, balance=50, battery=80, charging=False, vss=False,
         vss=vss,
         mic_muted=mic,
         headset_connected=linked,
+        unknown_bytes=(byte5, 0x11, 0x00),
     )
 
 
@@ -116,10 +117,40 @@ def test_rapid_volume_reports_are_not_debounced():
 
 
 def test_volume_at_the_top_of_the_range_stops_producing_events():
-    """At step 10 the wheel still turns but the value cannot rise."""
+    """An unchanged boundary telemetry packet is not a new click."""
     det = detector()
-    det.feed(snap(volume=10), now=0.0)
-    assert det.feed(snap(volume=10), now=1.0) == []
+    det.feed(snap(volume=5, byte5=0x11), now=0.0)
+    assert det.feed(snap(volume=5, byte5=0x11), now=1.0) == []
+
+
+def test_volume_boundary_command_uses_volume_marker_not_previous_chat_direction():
+    det = detector()
+    det.feed(snap(volume=5, balance=100, byte5=0x13), now=0.0)
+    events = det.feed(snap(volume=5, balance=100, byte5=0x11), now=1.0)
+    assert ids(events) == [InputId.VOLUME_UP]
+
+
+def test_chat_boundary_command_uses_chat_marker_not_previous_volume_direction():
+    det = detector()
+    det.feed(snap(volume=5, balance=100, byte5=0x11), now=0.0)
+    events = det.feed(snap(volume=5, balance=100, byte5=0x13), now=1.0)
+    assert ids(events) == [InputId.CHATMIX_UP]
+
+
+def test_volume_change_does_not_also_fire_chat_boundary_mapping():
+    det = detector()
+    det.feed(snap(volume=5, balance=100, byte5=0x13), now=0.0)
+    events = det.feed(snap(volume=4, balance=100, byte5=0x12), now=1.0)
+    assert ids(events) == [InputId.VOLUME_DOWN]
+
+
+def test_repeated_boundary_marker_is_not_an_extra_command():
+    det = detector()
+    det.feed(snap(volume=5, balance=100, byte5=0x11), now=0.0)
+    assert ids(det.feed(snap(volume=5, balance=100, byte5=0x13), now=1.0)) == [
+        InputId.CHATMIX_UP
+    ]
+    assert det.feed(snap(volume=5, balance=100, byte5=0x13), now=2.0) == []
 
 
 # -------------------------------------------------------------- chatmix --

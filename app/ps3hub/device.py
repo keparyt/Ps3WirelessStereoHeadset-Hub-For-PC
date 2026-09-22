@@ -27,6 +27,7 @@ exactly the behaviour that made inputs appear during the investigation.
 
 from __future__ import annotations
 
+import os
 import queue
 import threading
 import time
@@ -36,8 +37,10 @@ from typing import Any, Callable
 from .applog import get_logger
 from .hid_reader import (
     DeviceGoneError,
+    HidApiReader,
     NativeWindowsHIDReader,
     NoInputReportError,
+    hidapi_available,
     native_windows_available,
     windows_path,
 )
@@ -160,7 +163,7 @@ class HeadsetService:
         self._stop = threading.Event()
         self._reports: "queue.Queue[tuple[str, bytes]]" = queue.Queue(maxsize=2048)
         self._ui_events: "queue.Queue[ServiceEvent]" = queue.Queue(maxsize=MAX_UI_EVENTS)
-        self._readers: dict[str, NativeWindowsHIDReader] = {}
+        self._readers: dict[str, HidApiReader | NativeWindowsHIDReader] = {}
         self._collections: dict[str, CollectionInfo] = {}
         # Collections with InputReportByteLength=0 are valid HID collections
         # (typically output/control-only) but cannot provide input reports.
@@ -232,19 +235,27 @@ class HeadsetService:
     # ------------------------------------------------------------ lifecycle --
 
     def start(self) -> None:
-        backend_ok = native_windows_available()
+        native_ok = native_windows_available()
+        hidapi_ok = hidapi_available()
+        backend_ok = native_ok or hidapi_ok
         message = ""
+
         if not backend_ok:
-            message = (
-                "HID reading needs Windows. The interface still works so you can "
-                "review and edit bindings."
-            )
-        elif hid is None:
-            backend_ok = False
-            message = (
-                "The hidapi package is missing. Install it with: "
-                "python -m pip install -r requirements.txt"
-            )
+            if os.name != "nt":
+                message = (
+                    "HID reading needs Windows. The interface still works so you can "
+                    "review and edit bindings."
+                )
+            else:
+                message = (
+                    "No HID backend is available. Install hidapi with: "
+                    "python -m pip install -r requirements.txt"
+                )
+
+        if hidapi_ok:
+            log.info("Using hidapi as the primary receive transport")
+        elif native_ok:
+            log.warning("hidapi unavailable; using native Windows HID reader as fallback")
         with self._lock:
             self._state.backend_available = backend_ok
             self._state.backend_message = message
@@ -409,11 +420,18 @@ class HeadsetService:
         usage_page = int(info.get("usage_page") or 0)
         usage = int(info.get("usage") or 0)
         label = collection_name(usage_page, usage)
-        reader = NativeWindowsHIDReader(
+        reader_cls = HidApiReader if hidapi_available() else NativeWindowsHIDReader
+        reader_kwargs: dict[str, Any] = {
+            "on_report": lambda report, p=path: self._on_report(p, report),
+            "on_error": lambda exc, p=path, l=label: self._on_reader_error(p, l, exc),
+            "label": label,
+        }
+        if reader_cls is HidApiReader:
+            reader_kwargs["read_size"] = 512
+
+        reader = reader_cls(
             info.get("path"),
-            on_report=lambda report, p=path: self._on_report(p, report),
-            on_error=lambda exc, p=path, l=label: self._on_reader_error(p, l, exc),
-            label=label,
+            **reader_kwargs,
         )
         try:
             reader.start()

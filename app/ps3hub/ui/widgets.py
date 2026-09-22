@@ -104,13 +104,13 @@ class StatusPill(tk.Canvas):
 
 
 class VolumeLadder(tk.Canvas):
-    """Six segments, one per receiver volume level, plus the percentage.
+    """Ten segments representing the headset volume scale, plus the percentage.
 
     This is the hero element of the dashboard. It is honest by construction:
     you can count the steps the device actually has.
     """
 
-    SEGMENTS = 6
+    SEGMENTS = 10
     HEIGHT = 108
 
     def __init__(self, master, bg: str = PANEL) -> None:
@@ -140,7 +140,7 @@ class VolumeLadder(tk.Canvas):
         self.create_text(0, 8, text=reading, anchor="nw", fill=PAPER if known else FAINT,
                          font=font.display)
         caption = (
-            f"level {self._level} of {self.SEGMENTS - 1}" if known
+            f"level {min((self._level or 0) * 2, self.SEGMENTS)} of {self.SEGMENTS}" if known
             else "waiting for the headset"
         )
         self.create_text(0, 56, text=caption, anchor="nw", fill=MUTED, font=font.small)
@@ -151,12 +151,12 @@ class VolumeLadder(tk.Canvas):
         for index in range(self.SEGMENTS):
             x1 = index * (seg_width + gap)
             x2 = x1 + seg_width
-            filled = known and index < (self._level or 0)
+            filled = known and index < min((self._level or 0) * 2, self.SEGMENTS)
             if filled:
                 fill = IDLE if self._muted else self._segment_color(index)
             else:
                 # Visible but clearly empty: the point of the ladder is that
-                # you can count all six receiver levels, not just the lit ones.
+                # you can see all ten headset volume levels while the receiver status is mapped onto them.
                 fill = "#1A3543"
             round_rect(self, x1, top, x2, bottom, 3, fill=fill, outline="")
 

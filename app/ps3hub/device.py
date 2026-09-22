@@ -37,6 +37,7 @@ from .applog import get_logger
 from .hid_reader import (
     DeviceGoneError,
     NativeWindowsHIDReader,
+    NoInputReportError,
     native_windows_available,
     windows_path,
 )
@@ -161,6 +162,10 @@ class HeadsetService:
         self._ui_events: "queue.Queue[ServiceEvent]" = queue.Queue(maxsize=MAX_UI_EVENTS)
         self._readers: dict[str, NativeWindowsHIDReader] = {}
         self._collections: dict[str, CollectionInfo] = {}
+        # Collections with InputReportByteLength=0 are valid HID collections
+        # (typically output/control-only) but cannot provide input reports.
+        # Remember them so the scanner does not retry them every second.
+        self._non_input_collections: set[str] = set()
         self._fingerprints: dict[tuple[int, int, int, int], ReportFingerprint] = {}
         self._scanner: threading.Thread | None = None
         self._dispatcher: threading.Thread | None = None
@@ -370,7 +375,11 @@ class HeadsetService:
 
         for info in selected:
             path = windows_path(info.get("path", ""))
-            if not path or path in self._readers:
+            if (
+                not path
+                or path in self._readers
+                or path in self._non_input_collections
+            ):
                 continue
             self._open(path, info)
 
@@ -395,6 +404,16 @@ class HeadsetService:
         )
         try:
             reader.start()
+        except NoInputReportError:
+            # This collection has no input report stream by design. Do not
+            # report it as an application error and do not retry it every scan.
+            self._non_input_collections.add(path)
+            log.info(
+                "Skipping %s: HID collection has no input reports "
+                "(InputReportByteLength=0)",
+                label,
+            )
+            return
         except Exception as exc:
             message = f"Could not open {label}: {exc}"
             log.error(message)
@@ -438,6 +457,7 @@ class HeadsetService:
             except Exception:
                 pass
         self._readers.clear()
+        self._non_input_collections.clear()
         self._detector.reset("receiver unplugged")
         with self._lock:
             self._state.readers_active = 0

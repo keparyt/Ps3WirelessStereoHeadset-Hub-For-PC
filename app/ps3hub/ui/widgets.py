@@ -362,18 +362,41 @@ class ScrollFrame(tk.Frame):
         self._canvas.itemconfigure(self._window, width=event.width)
 
     def bind_all_wheel(self) -> None:
-        for widget in (self._canvas, self.interior):
-            widget.bind("<MouseWheel>", self._wheel)       # Windows / macOS
-            widget.bind("<Button-4>", self._wheel)         # X11 up
-            widget.bind("<Button-5>", self._wheel)         # X11 down
+        # Tk mouse-wheel events are delivered to the widget under the pointer;
+        # binding only the Canvas/interior therefore fails when the pointer is
+        # over a Label, Checkbutton, Spinbox, etc. Use a class-wide binding and
+        # let each ScrollFrame handle the event only when its own content owns it.
+        self.bind_all("<MouseWheel>", self._wheel, add="+")
+        self.bind_all("<Button-4>", self._wheel, add="+")
+        self.bind_all("<Button-5>", self._wheel, add="+")
 
-    def _wheel(self, event) -> str:
+    def _belongs_to_this_scrollframe(self, widget: tk.Misc) -> bool:
+        current = widget
+        interior_path = str(self.interior)
+
+        while current is not None:
+            try:
+                if str(current) == interior_path:
+                    return True
+                parent = current.winfo_parent()
+                if not parent:
+                    return False
+                current = current.nametowidget(parent)
+            except (tk.TclError, AttributeError):
+                return False
+        return False
+
+    def _wheel(self, event) -> str | None:
+        if not self._belongs_to_this_scrollframe(event.widget):
+            return None
+
         if getattr(event, "num", None) == 4:
             delta = -1
         elif getattr(event, "num", None) == 5:
             delta = 1
         else:
             delta = -1 if event.delta > 0 else 1
+
         self._canvas.yview_scroll(delta, "units")
         return "break"
 

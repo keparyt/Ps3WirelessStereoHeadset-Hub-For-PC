@@ -87,17 +87,32 @@ def test_large_volume_jump_replays_the_authoritative_state_delta():
     det = detector()
     det.feed(snap(volume=0), now=0.0)
     events = det.feed(snap(volume=5), now=0.01)
-    assert ids(events) == [InputId.VOLUME_UP]
-    assert events[0].repeat == 5
+    assert ids(events) == [
+        InputId.VOLUME_UP,
+        InputId.VOLUME_UP,
+        InputId.VOLUME_UP,
+        InputId.VOLUME_UP,
+        InputId.VOLUME_UP,
+    ]
+    assert all(event.repeat == 1 for event in events)
+    assert [event.value for event in events] == [1, 2, 3, 4, 5]
 
 
 def test_rapid_volume_reports_are_not_debounced():
     det = EdgeDetector(settle_seconds=0.0, debounce_seconds=0.25)
     det.feed(snap(volume=0), now=0.0)
-    assert ids(det.feed(snap(volume=1), now=0.010)) == [InputId.VOLUME_UP]
-    assert ids(det.feed(snap(volume=2), now=0.020)) == [InputId.VOLUME_UP]
-    assert ids(det.feed(snap(volume=3), now=0.030)) == [InputId.VOLUME_UP]
-    assert ids(det.feed(snap(volume=4), now=0.040)) == [InputId.VOLUME_UP]
+    events = det.feed(snap(volume=1), now=0.010)
+    assert ids(events) == [InputId.VOLUME_UP]
+    assert events[0].repeat == 1
+    events = det.feed(snap(volume=2), now=0.020)
+    assert ids(events) == [InputId.VOLUME_UP]
+    assert events[0].repeat == 1
+    events = det.feed(snap(volume=3), now=0.030)
+    assert ids(events) == [InputId.VOLUME_UP]
+    assert events[0].repeat == 1
+    events = det.feed(snap(volume=4), now=0.040)
+    assert ids(events) == [InputId.VOLUME_UP]
+    assert events[0].repeat == 1
 
 
 def test_volume_at_the_top_of_the_range_stops_producing_events():

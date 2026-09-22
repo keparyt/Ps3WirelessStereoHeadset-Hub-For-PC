@@ -140,7 +140,7 @@ class VolumeLadder(tk.Canvas):
         self.create_text(0, 8, text=reading, anchor="nw", fill=PAPER if known else FAINT,
                          font=font.display)
         caption = (
-            f"level {min((self._level or 0) * 2, self.SEGMENTS)} of {self.SEGMENTS}" if known
+            f"level {min(max(self._level or 0, 0), self.SEGMENTS)} of {self.SEGMENTS}" if known
             else "waiting for the headset"
         )
         self.create_text(0, 56, text=caption, anchor="nw", fill=MUTED, font=font.small)
@@ -151,7 +151,7 @@ class VolumeLadder(tk.Canvas):
         for index in range(self.SEGMENTS):
             x1 = index * (seg_width + gap)
             x2 = x1 + seg_width
-            filled = known and index < min((self._level or 0) * 2, self.SEGMENTS)
+            filled = known and index < min(max(self._level or 0, 0), self.SEGMENTS)
             if filled:
                 fill = IDLE if self._muted else self._segment_color(index)
             else:

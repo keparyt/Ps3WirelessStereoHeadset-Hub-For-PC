@@ -317,10 +317,19 @@ class HubApp(tk.Tk):
                 log.exception("Queued interface callback failed")
 
     def _drain_service_events(self) -> None:
+        saw_status = False
         for event in self._service.poll_events():
             self._dashboard.on_event(event)
             self._mapping.on_event(event)
             self._handle_service_event(event)
+            if event.type == EventType.STATUS:
+                saw_status = True
+
+        # A status report is the authoritative headset state. Do not wait for
+        # the normal 160 ms UI refresh interval after a real HID report arrives.
+        # The next Tk tick will repaint from the newest headset snapshot.
+        if saw_status:
+            self._refresh_accumulator = REFRESH_MS
 
     def _handle_service_event(self, event: ServiceEvent) -> None:
         if event.type == EventType.RECEIVER_ATTACHED:

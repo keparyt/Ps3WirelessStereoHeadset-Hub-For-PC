@@ -7,6 +7,9 @@
 ![Status](https://img.shields.io/badge/status-Active%20R%26D-orange)
 ![Protocol](https://img.shields.io/badge/HID-12BA%3A0035-purple)
 
+
+<img src="./GitAssets/Screenshot-main.png" width="100%" alt="Main Menu Screenshot Preview"/>
+
 ## Why does this project exist?
 
 I have a collection of these Sony wireless headsets.

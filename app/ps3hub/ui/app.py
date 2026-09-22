@@ -443,6 +443,8 @@ class HubApp(tk.Tk):
             self._rail_pill.set("Connected", LIVE)
         elif state.headset_linked:
             self._rail_pill.set("Idle", WARN)
+        elif state.snapshot is None:
+            self._rail_pill.set("Waiting for headset", IDLE)
         else:
             self._rail_pill.set("Headset off", IDLE)
 

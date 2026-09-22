@@ -387,15 +387,21 @@ class EdgeDetector:
     ) -> list[InputEvent]:
         admitted: list[InputEvent] = []
         for event in events:
-            if not force and now < self._settle_until:
+            # Volume is already backed by the receiver's authoritative B0
+            # state. It must not be hidden by the connection settle window:
+            # if the user turns the wheel while the headset is coming online,
+            # that real state transition is still a real input.
+            volume_event = event.input_id in (InputId.VOLUME_UP, InputId.VOLUME_DOWN)
+
+            if not force and not volume_event and now < self._settle_until:
                 self._suppressed += 1
                 log.debug("Suppressed %s inside settle window", event.input_id)
                 continue
+
             last = self._last_fired.get(event.input_id)
             # Volume events come from the headset's state transition itself.
             # Never time-debounce them: rapid presses and hold-repeat must be
             # represented by every new B0 state the receiver gives us.
-            volume_event = event.input_id in (InputId.VOLUME_UP, InputId.VOLUME_DOWN)
             if (
                 not force
                 and not volume_event

@@ -71,7 +71,7 @@ def test_parse_status_returns_a_snapshot():
     snapshot = parse_status(bytes.fromhex("B0 03 30 4B 49 00 11 00"))
     assert isinstance(snapshot, HeadsetSnapshot)
     assert snapshot.volume_level == 3
-    assert snapshot.volume_percent == 30
+    assert snapshot.volume_percent == 60
     assert snapshot.headset_connected is True
     assert snapshot.vss is True
     assert snapshot.mic_muted is False

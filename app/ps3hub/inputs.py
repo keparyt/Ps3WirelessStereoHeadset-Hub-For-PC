@@ -299,9 +299,11 @@ class EdgeDetector:
         if before is None or after is None or before == after:
             return []
         delta = after - before
-        if abs(delta) > self.resync_threshold:
-            log.debug("Volume jumped %d steps; treating as resync, not a press", delta)
-            return []
+        # Volume is different from the other fields: the receiver's B0 value is
+        # the headset's authoritative current volume state. A large delta is
+        # therefore still real information, not something to discard as a
+        # guessed burst. If several reports were coalesced by Windows, the
+        # resulting delta is the number of volume steps we can safely replay.
         input_id = InputId.VOLUME_UP if delta > 0 else InputId.VOLUME_DOWN
         return [
             InputEvent(
@@ -390,7 +392,16 @@ class EdgeDetector:
                 log.debug("Suppressed %s inside settle window", event.input_id)
                 continue
             last = self._last_fired.get(event.input_id)
-            if not force and last is not None and (now - last) < self.debounce_seconds:
+            # Volume events come from the headset's state transition itself.
+            # Never time-debounce them: rapid presses and hold-repeat must be
+            # represented by every new B0 state the receiver gives us.
+            volume_event = event.input_id in (InputId.VOLUME_UP, InputId.VOLUME_DOWN)
+            if (
+                not force
+                and not volume_event
+                and last is not None
+                and (now - last) < self.debounce_seconds
+            ):
                 self._suppressed += 1
                 log.debug("Debounced duplicate %s", event.input_id)
                 continue

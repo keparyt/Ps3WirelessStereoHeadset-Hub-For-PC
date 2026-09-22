@@ -144,13 +144,18 @@ def test_volume_change_does_not_also_fire_chat_boundary_mapping():
     assert ids(events) == [InputId.VOLUME_DOWN]
 
 
-def test_repeated_boundary_marker_is_not_an_extra_command():
+def test_repeated_chat_boundary_marker_is_each_an_action():
     det = detector()
     det.feed(snap(volume=5, balance=100, byte5=0x11), now=0.0)
     assert ids(det.feed(snap(volume=5, balance=100, byte5=0x13), now=1.0)) == [
         InputId.CHATMIX_UP
     ]
-    assert det.feed(snap(volume=5, balance=100, byte5=0x13), now=2.0) == []
+    assert ids(det.feed(snap(volume=5, balance=100, byte5=0x13), now=2.0)) == [
+        InputId.CHATMIX_UP
+    ]
+    assert ids(det.feed(snap(volume=5, balance=100, byte5=0x13), now=3.0)) == [
+        InputId.CHATMIX_UP
+    ]
 
 
 # -------------------------------------------------------------- chatmix --

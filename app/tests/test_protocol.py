@@ -33,20 +33,23 @@ def test_non_b0_is_ignored():
     assert decode_b0(b"B0") is None
 
 
-def test_ten_volume_levels_map_to_percent():
+def test_gold_v1_volume_levels_map_to_percent():
     assert volume_to_percent(0) == 0
-    assert volume_to_percent(5) == 50
-    assert volume_to_percent(10) == 100
-    assert volume_to_percent(11) is None
+    assert volume_to_percent(1) == 20
+    assert volume_to_percent(2) == 40
+    assert volume_to_percent(3) == 60
+    assert volume_to_percent(4) == 80
+    assert volume_to_percent(5) == 100
+    assert volume_to_percent(6) is None
     assert volume_to_percent(None) is None
 
 
-def test_volume_above_ten_is_rejected_not_guessed():
-    decoded = decode_b0(bytes.fromhex("B0 40 20 55 48 00 11 00"))
+def test_volume_above_gold_v1_max_is_rejected_not_guessed():
+    decoded = decode_b0(bytes.fromhex("B0 06 20 55 48 00 11 00"))
     assert decoded is not None
     assert decoded["volume_level"] is None
     assert decoded["volume_percent"] is None
-    assert decoded["volume_raw"] == 0x40  # the raw value is still available
+    assert decoded["volume_raw"] == 0x06  # the raw value is still available
 
 
 def test_normalize_strips_leading_report_id_padding():

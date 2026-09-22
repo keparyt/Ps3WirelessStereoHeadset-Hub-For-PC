@@ -174,6 +174,14 @@ if _hid is not None:
     _HidD_SetNumInputBuffers.argtypes = [wintypes.HANDLE, wintypes.ULONG]
     _HidD_SetNumInputBuffers.restype = wintypes.BOOLEAN
 
+    _HidD_GetInputReport = _hid.HidD_GetInputReport
+    _HidD_GetInputReport.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPVOID,
+        wintypes.ULONG,
+    ]
+    _HidD_GetInputReport.restype = wintypes.BOOLEAN
+
 
 def native_windows_available() -> bool:
     return os.name == "nt" and _kernel32 is not None and _hid is not None
@@ -208,6 +216,7 @@ class NativeWindowsHIDReader:
         on_report: Callable[[bytes], None],
         on_error: Callable[[Exception], None] | None = None,
         label: str = "",
+        initial_report_id: int | None = None,
     ) -> None:
         if not native_windows_available():
             raise OSError("Native Windows HID backend is only available on Windows")
@@ -215,6 +224,7 @@ class NativeWindowsHIDReader:
         self.label = label or self.path[-40:]
         self.on_report = on_report
         self.on_error = on_error
+        self.initial_report_id = initial_report_id
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
         self.handle = None
@@ -318,6 +328,7 @@ class NativeWindowsHIDReader:
 
         buffer = ctypes.create_string_buffer(self.input_report_length)
         try:
+            self._request_initial_report()
             while not self.stop_event.is_set():
                 _ResetEvent(event)
                 overlapped = OVERLAPPED()
@@ -370,6 +381,50 @@ class NativeWindowsHIDReader:
         except Exception as exc:  # pragma: no cover - defensive
             log.exception("Unhandled reader failure on %s", self.label)
             self._report_error(exc)
+
+    def _request_initial_report(self) -> None:
+        """Ask the HID control channel for the current status once at startup.
+
+        The receiver may already have the headset linked before this process
+        opens the interrupt stream. In that case no new interrupt report may
+        arrive until the user changes something. A GET_INPUT_REPORT for the
+        known 0xB0 status ID gives us the current state immediately when the
+        collection supports it.
+        """
+        if self.initial_report_id is None or _hid is None:
+            return
+
+        with self._lock:
+            handle = self.handle
+        if handle in (None, INVALID_HANDLE_VALUE):
+            return
+
+        report = bytearray(self.input_report_length)
+        if not report:
+            return
+        report[0] = int(self.initial_report_id) & 0xFF
+
+        ok = _HidD_GetInputReport(
+            handle,
+            (ctypes.c_ubyte * len(report)).from_buffer(report),
+            len(report),
+        )
+        if ok:
+            payload = bytes(report)
+            log.info(
+                "Initial input report retrieved for %s: %s",
+                self.label,
+                payload.hex(" ").upper(),
+            )
+            self._deliver(payload)
+        else:
+            err = _winerr()
+            log.debug(
+                "Initial input report unavailable for %s (WinError %d); "
+                "waiting for interrupt reports",
+                self.label,
+                err,
+            )
 
     def _deliver(self, report: bytes) -> None:
         self.report_count += 1

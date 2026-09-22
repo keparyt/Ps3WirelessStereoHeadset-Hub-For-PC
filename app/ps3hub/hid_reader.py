@@ -27,7 +27,6 @@ from __future__ import annotations
 import ctypes
 import os
 import threading
-import time
 from ctypes import wintypes
 from typing import Callable
 
@@ -210,7 +209,6 @@ class NativeWindowsHIDReader:
 
     WAIT_SLICE_MS = 100
     INPUT_BUFFER_COUNT = 64
-    STATUS_POLL_INTERVAL_SECONDS = 120.0
 
     def __init__(
         self,
@@ -218,7 +216,6 @@ class NativeWindowsHIDReader:
         on_report: Callable[[bytes], None],
         on_error: Callable[[Exception], None] | None = None,
         label: str = "",
-        initial_report_id: int | None = None,
     ) -> None:
         if not native_windows_available():
             raise OSError("Native Windows HID backend is only available on Windows")
@@ -226,7 +223,6 @@ class NativeWindowsHIDReader:
         self.label = label or self.path[-40:]
         self.on_report = on_report
         self.on_error = on_error
-        self.initial_report_id = initial_report_id
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
         self.handle = None
@@ -330,22 +326,7 @@ class NativeWindowsHIDReader:
 
         buffer = ctypes.create_string_buffer(self.input_report_length)
         try:
-            self._request_initial_report()
-            next_status_poll = (
-                time.monotonic() + self.STATUS_POLL_INTERVAL_SECONDS
-                if self.initial_report_id is not None
-                else None
-            )
             while not self.stop_event.is_set():
-                if (
-                    next_status_poll is not None
-                    and time.monotonic() >= next_status_poll
-                ):
-                    self._request_status_report("periodic")
-                    next_status_poll = (
-                        time.monotonic() + self.STATUS_POLL_INTERVAL_SECONDS
-                    )
-
                 _ResetEvent(event)
                 overlapped = OVERLAPPED()
                 overlapped.hEvent = event
@@ -368,9 +349,7 @@ class NativeWindowsHIDReader:
                     self._fail(err, "ReadFile")
                     return
 
-                # Wait in slices so stop() is honoured promptly and
-                # the 120-second status refresh can run even when the headset
-                # has produced no new interrupt report.
+                # Wait in slices so stop() is honoured promptly.
                 while not self.stop_event.is_set():
                     result = _WaitForSingleObject(event, self.WAIT_SLICE_MS)
                     if result == WAIT_OBJECT_0:
@@ -378,14 +357,6 @@ class NativeWindowsHIDReader:
                     if result != WAIT_TIMEOUT:
                         self._fail(_winerr(), "WaitForSingleObject")
                         return
-                    if (
-                        next_status_poll is not None
-                        and time.monotonic() >= next_status_poll
-                    ):
-                        self._request_status_report("periodic")
-                        next_status_poll = (
-                            time.monotonic() + self.STATUS_POLL_INTERVAL_SECONDS
-                        )
 
                 if self.stop_event.is_set():
                     _CancelIoEx(handle, ctypes.byref(overlapped))
@@ -407,49 +378,6 @@ class NativeWindowsHIDReader:
         except Exception as exc:  # pragma: no cover - defensive
             log.exception("Unhandled reader failure on %s", self.label)
             self._report_error(exc)
-
-    def _request_initial_report(self) -> None:
-        """Ask for the current status as soon as the status reader opens."""
-        self._request_status_report("initial")
-
-    def _request_status_report(self, reason: str) -> None:
-        """Request the current 0xB0 state without changing the live reader path."""
-        if self.initial_report_id is None or _hid is None:
-            return
-
-        with self._lock:
-            handle = self.handle
-        if handle in (None, INVALID_HANDLE_VALUE):
-            return
-
-        report = bytearray(self.input_report_length)
-        if not report:
-            return
-        report[0] = int(self.initial_report_id) & 0xFF
-
-        ok = _HidD_GetInputReport(
-            handle,
-            (ctypes.c_ubyte * len(report)).from_buffer(report),
-            len(report),
-        )
-        if ok:
-            payload = bytes(report)
-            log.info(
-                "%s input report retrieved for %s: %s",
-                reason.capitalize(),
-                self.label,
-                payload.hex(" ").upper(),
-            )
-            self._deliver(payload)
-        else:
-            err = _winerr()
-            log.debug(
-                "%s input report unavailable for %s (WinError %d); "
-                "waiting for interrupt reports",
-                reason.capitalize(),
-                self.label,
-                err,
-            )
 
     def _deliver(self, report: bytes) -> None:
         self.report_count += 1

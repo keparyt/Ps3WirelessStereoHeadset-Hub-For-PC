@@ -80,6 +80,10 @@ class DeviceGoneError(OSError):
     """Raised/reported when the receiver disappears during a read."""
 
 
+class NoInputReportError(OSError):
+    """HID collection exists but declares no input-report payload."""
+
+
 class OVERLAPPED(ctypes.Structure):
     _fields_ = [
         ("Internal", ULONG_PTR),
@@ -267,7 +271,10 @@ class NativeWindowsHIDReader:
                 )
             caps = self._get_caps(handle)
             if caps.InputReportByteLength <= 0:
-                raise OSError("HID collection reports InputReportByteLength=0")
+                raise NoInputReportError(
+                    "HID collection declares InputReportByteLength=0; "
+                    "it has no readable input-report stream"
+                )
             self.input_report_length = int(caps.InputReportByteLength)
             self.output_report_length = int(caps.OutputReportByteLength)
             self.feature_report_length = int(caps.FeatureReportByteLength)

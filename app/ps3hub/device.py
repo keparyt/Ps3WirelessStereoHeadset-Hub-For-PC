@@ -485,13 +485,36 @@ class HeadsetService:
             self._record_unknown(path, report, label)
             return
 
+        previous_snapshot = self._detector.last_snapshot
+        if (
+            previous_snapshot is not None
+            and previous_snapshot.headset_connected
+            and snapshot.headset_connected
+            and previous_snapshot.volume_level != snapshot.volume_level
+        ):
+            log.info(
+                "Headset volume state: %s -> %s (%s%% -> %s%%) | raw=%s",
+                previous_snapshot.volume_level,
+                snapshot.volume_level,
+                previous_snapshot.volume_percent,
+                snapshot.volume_percent,
+                snapshot.raw_hex,
+            )
+
         with self._lock:
             self._state.snapshot = snapshot
             self._state.status_reports += 1
             self._state.last_status_time = now
 
         self._emit(ServiceEvent(
-            EventType.STATUS, snapshot.raw_hex, payload={"collection": label}
+            EventType.STATUS,
+            snapshot.raw_hex,
+            payload={
+                "collection": label,
+                "snapshot": snapshot,
+                "volume_level": snapshot.volume_level,
+                "volume_percent": snapshot.volume_percent,
+            },
         ))
 
         for event in self._detector.feed(snapshot, now=now):

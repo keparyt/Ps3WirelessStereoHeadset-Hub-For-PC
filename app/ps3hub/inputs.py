@@ -52,6 +52,13 @@ SETTLE_SECONDS = 0.45
 #: Two identical inputs closer together than this are treated as one.
 DEBOUNCE_SECONDS = 0.035
 
+# Observed in the user's live B0 captures. These are deliberately marked
+# provisional until controlled captures confirm the mapping:
+#   byte5=0x13 -> ChatMix Up
+#   byte5=0x14 -> ChatMix Down
+OBSERVED_CHATMIX_UP_MARKER = 0x13
+OBSERVED_CHATMIX_DOWN_MARKER = 0x14
+
 
 class Category:
     VOLUME = "Volume"
@@ -364,16 +371,28 @@ class EdgeDetector:
                 )
             ]
 
-        # At chat-mix min/max, an unchanged value is still actionable when the
-        # physical control is pressed farther in the same direction.
+        # At chat-mix min/max, an unchanged value is still actionable when
+        # the physical control is pressed farther in the same direction.
         if after in (CHAT_BALANCE_MIN, CHAT_BALANCE_MAX):
-            repeated = self._last_directional_input
+            # Prefer the observed raw byte marker because it survives a
+            # boundary hit even if the previous state did not move.
+            marker = current.unknown_bytes[0]
+            if marker == OBSERVED_CHATMIX_UP_MARKER:
+                repeated = InputId.CHATMIX_UP
+            elif marker == OBSERVED_CHATMIX_DOWN_MARKER:
+                repeated = InputId.CHATMIX_DOWN
+            else:
+                repeated = self._last_directional_input
+
             if repeated in (InputId.CHATMIX_UP, InputId.CHATMIX_DOWN):
                 return [InputEvent(
                     repeated,
                     repeat=1,
                     value=after,
-                    detail=f"{after} -> {after} (boundary repeat)",
+                    detail=(
+                        f"{after} -> {after} (boundary repeat; "
+                        f"byte5=0x{marker:02X})"
+                    ),
                 )]
         return []
 

@@ -117,6 +117,7 @@ class ServiceState:
     status_reports: int = 0
     total_reports: int = 0
     total_bytes: int = 0
+    report_sequence: int = 0
     inputs_detected: int = 0
     last_input: str = ""
     last_error: str = ""
@@ -467,6 +468,8 @@ class HeadsetService:
             info = self._collections.get(path)
             label = info.name if info else "Unknown collection"
             self._state.total_reports += 1
+            self._state.report_sequence += 1
+            report_sequence = self._state.report_sequence
             self._state.total_bytes += len(report)
             self._state.last_report_time = now
             self._state.last_report_hex = hex_bytes(report)
@@ -474,10 +477,23 @@ class HeadsetService:
             if info is not None:
                 self._collections[path] = replace(info, reports=info.reports + 1)
 
+        raw_hex = hex_bytes(report)
+        # Log every report, including identical decoded states. A repeated
+        # physical click may be represented by a changing byte that the
+        # current state decoder does not yet assign a semantic meaning to.
+        log.info(
+            "RAW #%06d | %s | %d bytes | %s",
+            report_sequence, label, len(report), raw_hex,
+        )
         self._emit(ServiceEvent(
             EventType.RAW_REPORT,
-            hex_bytes(report),
-            payload={"collection": label, "length": len(report)},
+            raw_hex,
+            payload={
+                "collection": label,
+                "length": len(report),
+                "sequence": report_sequence,
+                "raw": raw_hex,
+            },
         ))
 
         snapshot = parse_status(report)
@@ -486,6 +502,16 @@ class HeadsetService:
             return
 
         previous_snapshot = self._detector.last_snapshot
+        log.info(
+            "DECODE #%06d | B0 | volume=%s (%s%%) | chatmix=%s | battery=%s | "
+            "charging=%s | vss=%s | mic_muted=%s | linked=%s | flags=0x%02X | "
+            "byte5=0x%02X | byte6=0x%02X | byte7=0x%02X",
+            report_sequence, snapshot.volume_level, snapshot.volume_percent,
+            snapshot.chat_balance, snapshot.battery_percent, snapshot.charging,
+            snapshot.vss, snapshot.mic_muted, snapshot.headset_connected,
+            snapshot.flags, snapshot.unknown_bytes[0], snapshot.unknown_bytes[1],
+            snapshot.unknown_bytes[2],
+        )
         if (
             previous_snapshot is not None
             and previous_snapshot.headset_connected
@@ -511,6 +537,7 @@ class HeadsetService:
             snapshot.raw_hex,
             payload={
                 "collection": label,
+                "sequence": report_sequence,
                 "snapshot": snapshot,
                 "volume_level": snapshot.volume_level,
                 "volume_percent": snapshot.volume_percent,
@@ -529,7 +556,11 @@ class HeadsetService:
             EventType.INPUT, str(event), input_event=event,
             payload={"repeat": event.repeat, "detail": event.detail},
         ))
-        log.info("Input: %s %s", event.input_id, event.detail)
+        log.info(
+            "INPUT #%06d | %s | repeat=%d | value=%s | detail=%s",
+            self._state.inputs_detected, event.input_id, event.repeat,
+            event.value, event.detail or "-",
+        )
 
         handler = self._input_handler
         if handler is not None:

@@ -32,6 +32,19 @@ if IS_WINDOWS:
     _user32 = ctypes.WinDLL("user32", use_last_error=True)
     _shell32 = ctypes.WinDLL("shell32", use_last_error=True)
 
+    # Some Python 3.10 wintypes builds do not expose every Win32
+    # alias (notably LRESULT/HCURSOR). Define compatibility aliases here
+    # instead of depending on the exact CPython version.
+    _HANDLE = wintypes.HANDLE
+    _HINSTANCE = getattr(wintypes, "HINSTANCE", _HANDLE)
+    _HICON = getattr(wintypes, "HICON", _HANDLE)
+    _HCURSOR = getattr(wintypes, "HCURSOR", _HANDLE)
+    _HBRUSH = getattr(wintypes, "HBRUSH", _HANDLE)
+    _HMENU = getattr(wintypes, "HMENU", _HANDLE)
+    _HWND = getattr(wintypes, "HWND", _HANDLE)
+    _HGLOBAL = getattr(wintypes, "HGLOBAL", _HANDLE)
+    _LRESULT = getattr(wintypes, "LRESULT", ctypes.c_ssize_t)
+
     _WM_APP = 0x8000
     _WM_TRAY = _WM_APP + 1
     _WM_LBUTTONUP = 0x0202
@@ -84,19 +97,6 @@ if IS_WINDOWS:
             ("x", wintypes.LONG),
             ("y", wintypes.LONG),
         ]
-
-    # Some Python 3.10 wintypes builds do not expose every Win32
-    # alias (notably LRESULT/HCURSOR). Define compatibility aliases here
-    # instead of depending on the exact CPython version.
-    _HANDLE = wintypes.HANDLE
-    _HINSTANCE = getattr(wintypes, "HINSTANCE", _HANDLE)
-    _HICON = getattr(wintypes, "HICON", _HANDLE)
-    _HCURSOR = getattr(wintypes, "HCURSOR", _HANDLE)
-    _HBRUSH = getattr(wintypes, "HBRUSH", _HANDLE)
-    _HMENU = getattr(wintypes, "HMENU", _HANDLE)
-    _HWND = getattr(wintypes, "HWND", _HANDLE)
-    _HGLOBAL = getattr(wintypes, "HGLOBAL", _HANDLE)
-    _LRESULT = getattr(wintypes, "LRESULT", ctypes.c_ssize_t)
 
     class WNDCLASSW(ctypes.Structure):
         _fields_ = [

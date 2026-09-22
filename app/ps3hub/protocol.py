@@ -13,7 +13,7 @@ Observed status report (8 bytes):
     │  │  │  │  └─────────── flags: b0 VSS, b1 mic mute, b3 link, b6-7 family
     │  │  │  └────────────── battery 0x00-0x64, 0x80 while charging
     │  │  └───────────────── sound/chat balance 0x00-0x64
-    │  └──────────────────── volume level 0x00-0x0A (10 discrete steps)
+    │  └──────────────────── volume level 0x00-0x05 (6 discrete receiver levels)
     └─────────────────────── status report id
 """
 
@@ -48,7 +48,7 @@ STATUS_REPORT_ID = 0xB0
 STATUS_LENGTH = 8
 
 VOLUME_MIN = 0x00
-VOLUME_MAX = 0x0A  # 10 discrete hardware steps, reported as 0..10
+VOLUME_MAX = 0x05  # Gold V1 receiver reports 6 levels, 0..5
 VOLUME_STEPS = VOLUME_MAX - VOLUME_MIN
 
 CHAT_BALANCE_MIN = 0x00
@@ -87,8 +87,9 @@ def is_status_collection(usage_page: int, usage: int) -> bool:
 def volume_to_percent(level: int | None) -> int | None:
     """Map a discrete hardware step onto 0-100%.
 
-    The hardware exposes 10 steps and nothing finer. The percentage is a
-    presentation of those steps, not a claim of continuous resolution.
+    The Gold V1 receiver exposes 6 discrete levels (0..5). The percentage is a
+    presentation of those receiver levels: 0 = 0%, 5 = 100%. The headset's
+    internal volume scale is finer, but the receiver status report is not.
     """
     if level is None:
         return None

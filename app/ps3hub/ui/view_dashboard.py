@@ -123,6 +123,29 @@ class DashboardView(tk.Frame):
     # ------------------------------------------------------------- updating --
 
     def on_event(self, event: ServiceEvent) -> None:
+        if event.type == EventType.STATUS:
+            snapshot = event.payload.get("snapshot")
+            if snapshot is not None and snapshot.headset_connected:
+                # STATUS events are handled one at a time on the Tk thread.
+                # Paint each authoritative report immediately so rapid HID
+                # changes are not visually collapsed into only the final state.
+                self._volume.set(
+                    snapshot.volume_level,
+                    snapshot.volume_percent,
+                    muted=snapshot.mic_muted,
+                )
+                self._battery.set(snapshot.battery_percent, snapshot.charging)
+                self._balance.set(snapshot.chat_balance)
+                self._vss_pill.set(
+                    "Surround on" if snapshot.vss else "Surround off",
+                    ICE if snapshot.vss else IDLE,
+                )
+                self._mic_pill.set(
+                    "Mic muted" if snapshot.mic_muted else "Mic live",
+                    WARN if snapshot.mic_muted else LIVE,
+                )
+            return
+
         if event.type != EventType.INPUT or event.input_event is None:
             return
         input_event = event.input_event

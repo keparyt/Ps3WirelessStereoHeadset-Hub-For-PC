@@ -556,19 +556,23 @@ class HeadsetService:
         if previous_snapshot is not None:
             previous_marker = previous_snapshot.unknown_bytes[0]
             current_marker = snapshot.unknown_bytes[0]
-            if current_marker != previous_marker and current_marker in (0x13, 0x14):
-                inferred = (
-                    "CHATMIX_UP candidate"
-                    if current_marker == 0x13
-                    else "CHATMIX_DOWN candidate"
-                )
+            if current_marker != previous_marker and current_marker in (
+                0x11, 0x12, 0x13, 0x14
+            ):
+                inferred = {
+                    0x11: "VOLUME_UP candidate",
+                    0x12: "VOLUME_DOWN candidate",
+                    0x13: "CHATMIX_UP candidate",
+                    0x14: "CHATMIX_DOWN candidate",
+                }[current_marker]
                 log.info(
                     "B0 ACTION CANDIDATE #%06d | byte5 0x%02X -> 0x%02X | "
-                    "%s | state chatmix=%s | raw=%s",
+                    "%s | state volume=%s chatmix=%s | raw=%s",
                     report_sequence,
                     previous_marker,
                     current_marker,
                     inferred,
+                    snapshot.volume_level,
                     snapshot.chat_balance,
                     snapshot.raw_hex,
                 )

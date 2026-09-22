@@ -197,7 +197,8 @@ class DashboardView(tk.Frame):
                 WARN if snapshot.mic_muted else LIVE,
             )
         else:
-            self._volume_level_10 = None\n            self._volume.set(None, None)
+            self._volume_level_10 = None
+            self._volume.set(None, None)
             self._battery.set(None, False)
             self._balance.set(None)
             self._vss_pill.set("Surround unknown", IDLE)

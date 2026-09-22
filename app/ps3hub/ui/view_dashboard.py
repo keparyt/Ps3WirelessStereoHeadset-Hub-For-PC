@@ -28,7 +28,6 @@ class DashboardView(tk.Frame):
         self._profile_getter = profile_getter
         self._feed: Deque[tuple[float, str, str]] = deque(maxlen=FEED_LIMIT)
         self._feed_dirty = True
-        self._volume_level_10 = None
         self._build()
 
     # --------------------------------------------------------------- build --
@@ -130,11 +129,18 @@ class DashboardView(tk.Frame):
                 # STATUS events are handled one at a time on the Tk thread.
                 # Paint each authoritative report immediately so rapid HID
                 # changes are not visually collapsed into only the final state.
-                if self._volume_level_10 is None and snapshot.volume_level is not None:
-                    self._volume_level_10 = min(10, max(0, snapshot.volume_level * 2))
+                # The headset status report is the sole source of truth for
+                # the displayed volume. Never increment/decrement a local UI
+                # counter from INPUT events; that could drift if a HID report
+                # is missed, duplicated, or arrives out of order.
+                volume_level_10 = (
+                    min(10, max(0, snapshot.volume_level * 2))
+                    if snapshot.volume_level is not None
+                    else None
+                )
                 self._volume.set(
-                    self._volume_level_10,
-                    self._volume_level_10 * 10 if self._volume_level_10 is not None else None,
+                    volume_level_10,
+                    volume_level_10 * 10 if volume_level_10 is not None else None,
                     muted=snapshot.mic_muted,
                 )
                 self._battery.set(snapshot.battery_percent, snapshot.charging)
@@ -152,12 +158,6 @@ class DashboardView(tk.Frame):
         if event.type != EventType.INPUT or event.input_event is None:
             return
         input_event = event.input_event
-        if input_event.input_id == "volume_up":
-            self._volume_level_10 = min(10, (self._volume_level_10 if self._volume_level_10 is not None else 0) + 1)
-            self._volume.set(self._volume_level_10, self._volume_level_10 * 10)
-        elif input_event.input_id == "volume_down":
-            self._volume_level_10 = max(0, (self._volume_level_10 if self._volume_level_10 is not None else 0) - 1)
-            self._volume.set(self._volume_level_10, self._volume_level_10 * 10)
         profile = self._profile_getter()
         mapping = profile.bound_for(input_event.input_id) if profile else None
         outcome = mapping.action_label if mapping else "not bound"
@@ -179,11 +179,14 @@ class DashboardView(tk.Frame):
             self._link_pill.set("Headset off", IDLE)
 
         if snapshot is not None and state.headset_linked:
-            if self._volume_level_10 is None and snapshot.volume_level is not None:
-                self._volume_level_10 = min(10, max(0, snapshot.volume_level * 2))
+            volume_level_10 = (
+                min(10, max(0, snapshot.volume_level * 2))
+                if snapshot.volume_level is not None
+                else None
+            )
             self._volume.set(
-                self._volume_level_10,
-                self._volume_level_10 * 10 if self._volume_level_10 is not None else None,
+                volume_level_10,
+                volume_level_10 * 10 if volume_level_10 is not None else None,
                 muted=snapshot.mic_muted,
             )
             self._battery.set(snapshot.battery_percent, snapshot.charging)

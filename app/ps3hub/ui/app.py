@@ -28,6 +28,7 @@ from ..device import EventType, HeadsetService, ServiceEvent
 from ..inputs import InputEvent, InputId
 from ..mappings import Profile
 from ..notify import DesktopNotifier
+from ..tray import TrayManager, format_tray_status
 from .theme import (
     ABYSS, DECK, FAINT, FAULT, ICE, IDLE, LIVE, MUTED, PANEL, PAPER, RIDGE,
     WARN, apply, fonts,
@@ -50,21 +51,30 @@ MIN_HEIGHT = 680
 
 
 class HubApp(tk.Tk):
-    def __init__(self, store: ConfigStore | None = None) -> None:
+    def __init__(
+        self,
+        store: ConfigStore | None = None,
+        tray_mode: bool = False,
+    ) -> None:
         super().__init__()
         self._store = store or ConfigStore()
+        self._tray_mode = bool(tray_mode)
+        self._tray: TrayManager | None = None
+        self._shutting_down = False
         self._config: AppConfig = self._store.load()
         self._profile_lock = threading.RLock()
         self._ui_requests: "queue.Queue[Callable[[], None]]" = queue.Queue()
         self._save_job: str | None = None
         self._status_job: str | None = None
         self._refresh_accumulator = 0
+        self._previous_headset_linked = False
 
         self.title(f"{APP_NAME}")
         self.minsize(MIN_WIDTH, MIN_HEIGHT)
         self._restore_geometry()
         self._apply_icon()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.bind("<Unmap>", self._on_unmap, add="+")
 
         apply(self)
         self._fonts = fonts()
@@ -93,7 +103,23 @@ class HubApp(tk.Tk):
         self._select_view("dashboard")
         self.after(TICK_MS, self._tick)
 
-        if self._config.settings.start_minimized:
+        if self._tray_mode:
+            self._tray = TrayManager(
+                status_provider=lambda: format_tray_status(self._service.snapshot()),
+                on_open=lambda: self._ui_requests.put(self._bring_to_front),
+                on_hide=lambda: self._ui_requests.put(self._hide_to_tray),
+                on_refresh=self._service.request_scan,
+                on_exit=lambda: self._ui_requests.put(self._shutdown),
+                app_name=APP_NAME,
+            )
+            if self._tray.start():
+                self.withdraw()
+            else:
+                log.error("Tray mode was requested but the system tray could not be started")
+                self._tray = None
+                self._tray_mode = False
+
+        if not self._tray_mode and self._config.settings.start_minimized:
             self.iconify()
         if self._store.last_error:
             self._set_status(
@@ -299,8 +325,26 @@ class HubApp(tk.Tk):
     def _bring_to_front(self) -> None:
         try:
             self.deiconify()
+            self.state("normal")
             self.lift()
             self.focus_force()
+        except Exception:
+            pass
+
+    def _hide_to_tray(self) -> None:
+        if not self._tray_mode or self._shutting_down:
+            return
+        try:
+            self.withdraw()
+        except Exception:
+            pass
+
+    def _on_unmap(self, _event=None) -> None:
+        if not self._tray_mode or self._shutting_down:
+            return
+        try:
+            if self.state() == "iconic":
+                self.after_idle(self._hide_to_tray)
         except Exception:
             pass
 
@@ -383,6 +427,13 @@ class HubApp(tk.Tk):
 
     def _refresh(self) -> None:
         state = self._service.snapshot()
+
+        if self._tray_mode:
+            headset_linked = state.headset_linked
+            if headset_linked and not self._previous_headset_linked:
+                log.info("Headset connected; showing the interface")
+                self._bring_to_front()
+            self._previous_headset_linked = headset_linked
 
         if not state.backend_available:
             self._rail_pill.set("Unavailable", FAULT)
@@ -544,14 +595,28 @@ class HubApp(tk.Tk):
 
     # ------------------------------------------------------------------ close --
 
-    def _on_close(self) -> None:
-        log.info("Shutting down")
+    def _save_geometry(self) -> None:
         try:
             self._config.settings.window_geometry = self.geometry()
             with self._profile_lock:
                 self._store.save(self._config)
         except Exception:
-            log.exception("Could not save on exit")
+            log.exception("Could not save the configuration")
+
+    def _on_close(self) -> None:
+        if self._tray_mode and not self._shutting_down:
+            log.info("Window close requested; hiding to tray")
+            self._save_geometry()
+            self._hide_to_tray()
+            return
+        self._shutdown()
+
+    def _shutdown(self) -> None:
+        if self._shutting_down:
+            return
+        self._shutting_down = True
+        log.info("Shutting down")
+        self._save_geometry()
         try:
             self._service.stop()
         except Exception:
@@ -560,4 +625,10 @@ class HubApp(tk.Tk):
             self._notifier.shutdown()
         except Exception:
             log.exception("Could not stop the notifier cleanly")
+        try:
+            if self._tray is not None:
+                self._tray.stop()
+                self._tray = None
+        except Exception:
+            log.exception("Could not stop the system tray cleanly")
         self.destroy()

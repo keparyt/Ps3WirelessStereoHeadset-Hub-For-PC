@@ -45,6 +45,7 @@ from .inputs import EdgeDetector, InputEvent
 from .protocol import (
     TARGET_PID,
     TARGET_VID,
+    STATUS_REPORT_ID,
     HeadsetSnapshot,
     ReportFingerprint,
     collection_name,
@@ -414,6 +415,11 @@ class HeadsetService:
             on_report=lambda report, p=path: self._on_report(p, report),
             on_error=lambda exc, p=path, l=label: self._on_reader_error(p, l, exc),
             label=label,
+            initial_report_id=(
+                STATUS_REPORT_ID
+                if is_status_collection(usage_page, usage)
+                else None
+            ),
         )
         try:
             reader.start()

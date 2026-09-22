@@ -420,6 +420,19 @@ class HeadsetService:
         usage_page = int(info.get("usage_page") or 0)
         usage = int(info.get("usage") or 0)
         label = collection_name(usage_page, usage)
+
+        # FF03:0020 exists on this receiver but has no input-report stream.
+        # The native backend reports InputReportByteLength=0 for it. hidapi
+        # cannot expose that HID capability directly here, so skip it rather
+        # than reopening it every second and flooding the log with read errors.
+        if (usage_page, usage) == (0xFF03, 0x0020):
+            self._non_input_collections.add(path)
+            log.info(
+                "Skipping %s: known no-input HID collection (FF03:0020)",
+                label,
+            )
+            return
+
         reader_cls = HidApiReader if hidapi_available() else NativeWindowsHIDReader
         reader_kwargs: dict[str, Any] = {
             "on_report": lambda report, p=path: self._on_report(p, report),

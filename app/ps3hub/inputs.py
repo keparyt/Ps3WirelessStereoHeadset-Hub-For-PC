@@ -33,7 +33,15 @@ from dataclasses import dataclass, field
 from typing import Iterable
 
 from .applog import get_logger
-from .protocol import BATTERY_LOW_THRESHOLD, CHAT_BALANCE_STEP, HeadsetSnapshot
+from .protocol import (
+    BATTERY_LOW_THRESHOLD,
+    CHAT_BALANCE_MAX,
+    CHAT_BALANCE_MIN,
+    CHAT_BALANCE_STEP,
+    VOLUME_MAX,
+    VOLUME_MIN,
+    HeadsetSnapshot,
+)
 
 log = get_logger("inputs")
 
@@ -224,6 +232,7 @@ class EdgeDetector:
         self._settle_until = 0.0
         self._last_fired: dict[str, float] = {}
         self._suppressed = 0
+        self._last_directional_input: str | None = None
 
     # ----------------------------------------------------------- lifecycle --
 
@@ -235,6 +244,7 @@ class EdgeDetector:
         self._seeded = False
         self._settle_until = 0.0
         self._last_fired.clear()
+        self._last_directional_input = None
 
     @property
     def seeded(self) -> bool:
@@ -301,53 +311,71 @@ class EdgeDetector:
         self, previous: HeadsetSnapshot, current: HeadsetSnapshot
     ) -> list[InputEvent]:
         before, after = previous.volume_level, current.volume_level
-        if before is None or after is None or before == after:
+        if before is None or after is None:
             return []
-        delta = after - before
-        # Volume is different from the other fields: the receiver's B0 value is
-        # the headset's authoritative current volume state. A large delta is
-        # therefore still real information, not something to discard as a
-        # guessed burst. If several reports were coalesced by Windows, the
-        # resulting delta is the number of volume steps we can safely replay.
-        input_id = InputId.VOLUME_UP if delta > 0 else InputId.VOLUME_DOWN
 
-        # Do not collapse a multi-step movement into one InputEvent with
-        # repeat=N. The rest of the application treats an InputEvent as one
-        # discrete command, and the user needs to see/send every command
-        # separately. If the HID layer gives us 0 -> 3 in one dispatch pass,
-        # the receiver has still told us that three volume steps occurred.
-        # Reconstruct those discrete steps from the authoritative state.
-        direction = 1 if delta > 0 else -1
-        return [
-            InputEvent(
-                input_id,
-                repeat=1,
-                value=before + direction * offset,
-                detail=(
-                    f"step {before + direction * (offset - 1)} -> "
-                    f"{before + direction * offset}"
-                ),
-            )
-            for offset in range(1, abs(delta) + 1)
-        ]
+        if before != after:
+            delta = after - before
+            input_id = InputId.VOLUME_UP if delta > 0 else InputId.VOLUME_DOWN
+            direction = 1 if delta > 0 else -1
+            return [
+                InputEvent(
+                    input_id,
+                    repeat=1,
+                    value=before + direction * offset,
+                    detail=(
+                        f"step {before + direction * (offset - 1)} -> "
+                        f"{before + direction * offset}"
+                    ),
+                )
+                for offset in range(1, abs(delta) + 1)
+            ]
+
+        # At a physical boundary, the headset can report the same value again
+        # for another physical command. Replay the last volume direction.
+        if after in (VOLUME_MIN, VOLUME_MAX):
+            repeated = self._last_directional_input
+            if repeated in (InputId.VOLUME_UP, InputId.VOLUME_DOWN):
+                return [InputEvent(
+                    repeated,
+                    repeat=1,
+                    value=after,
+                    detail=f"{after} -> {after} (boundary repeat)",
+                )]
+        return []
 
     def _chatmix_events(
         self, previous: HeadsetSnapshot, current: HeadsetSnapshot
     ) -> list[InputEvent]:
         before, after = previous.chat_balance, current.chat_balance
-        if before is None or after is None or before == after:
+        if before is None or after is None:
             return []
-        raw_delta = after - before
-        steps = max(1, round(abs(raw_delta) / CHAT_BALANCE_STEP))
-        if steps > self.resync_threshold:
-            log.debug("Chat mix jumped %d steps; treating as resync", steps)
-            return []
-        input_id = InputId.CHATMIX_UP if raw_delta > 0 else InputId.CHATMIX_DOWN
-        return [
-            InputEvent(
-                input_id, repeat=steps, value=after, detail=f"{before} -> {after}"
-            )
-        ]
+
+        if before != after:
+            raw_delta = after - before
+            steps = max(1, round(abs(raw_delta) / CHAT_BALANCE_STEP))
+            if steps > self.resync_threshold:
+                log.debug("Chat mix jumped %d steps; treating as resync", steps)
+                return []
+            input_id = InputId.CHATMIX_UP if raw_delta > 0 else InputId.CHATMIX_DOWN
+            return [
+                InputEvent(
+                    input_id, repeat=steps, value=after, detail=f"{before} -> {after}"
+                )
+            ]
+
+        # At chat-mix min/max, an unchanged value is still actionable when the
+        # physical control is pressed farther in the same direction.
+        if after in (CHAT_BALANCE_MIN, CHAT_BALANCE_MAX):
+            repeated = self._last_directional_input
+            if repeated in (InputId.CHATMIX_UP, InputId.CHATMIX_DOWN):
+                return [InputEvent(
+                    repeated,
+                    repeat=1,
+                    value=after,
+                    detail=f"{after} -> {after} (boundary repeat)",
+                )]
+        return []
 
     def _toggle_events(
         self, previous: HeadsetSnapshot, current: HeadsetSnapshot
@@ -406,30 +434,33 @@ class EdgeDetector:
     ) -> list[InputEvent]:
         admitted: list[InputEvent] = []
         for event in events:
-            # Volume is already backed by the receiver's authoritative B0
-            # state. It must not be hidden by the connection settle window:
-            # if the user turns the wheel while the headset is coming online,
-            # that real state transition is still a real input.
-            volume_event = event.input_id in (InputId.VOLUME_UP, InputId.VOLUME_DOWN)
+            # Directional reports are commands, including boundary repeats.
+            directional_event = event.input_id in (
+                InputId.VOLUME_UP,
+                InputId.VOLUME_DOWN,
+                InputId.CHATMIX_UP,
+                InputId.CHATMIX_DOWN,
+            )
 
-            if not force and not volume_event and now < self._settle_until:
+            if not force and not directional_event and now < self._settle_until:
                 self._suppressed += 1
                 log.debug("Suppressed %s inside settle window", event.input_id)
                 continue
 
             last = self._last_fired.get(event.input_id)
-            # Volume events come from the headset's state transition itself.
-            # Never time-debounce them: rapid presses and hold-repeat must be
-            # represented by every new B0 state the receiver gives us.
             if (
                 not force
-                and not volume_event
+                and not directional_event
                 and last is not None
                 and (now - last) < self.debounce_seconds
             ):
                 self._suppressed += 1
                 log.debug("Debounced duplicate %s", event.input_id)
                 continue
+
+            if directional_event:
+                self._last_directional_input = event.input_id
+
             self._last_fired[event.input_id] = now
             admitted.append(event)
         return admitted

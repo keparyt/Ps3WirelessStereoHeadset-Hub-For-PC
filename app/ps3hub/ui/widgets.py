@@ -123,6 +123,8 @@ class VolumeLadder(tk.Canvas):
         self.bind("<Configure>", lambda _event: self._draw())
 
     def set(self, level: int | None, percent: int | None, muted: bool = False) -> None:
+        if level is not None:
+            level = min(self.SEGMENTS, max(0, int(level)))
         if (level, percent, muted) == (self._level, self._percent, self._muted):
             return
         self._level, self._percent, self._muted = level, percent, muted

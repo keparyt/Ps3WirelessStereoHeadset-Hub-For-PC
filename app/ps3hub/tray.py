@@ -85,6 +85,11 @@ if IS_WINDOWS:
             ("y", wintypes.LONG),
         ]
 
+    # Python 3.10/older wintypes builds do not always expose every
+    # Windows handle alias even though the underlying Win32 types are all
+    # pointer-sized HANDLE values. Keep the tray compatible with those builds.
+    _HCURSOR = getattr(wintypes, "HCURSOR", wintypes.HANDLE)
+
     class WNDCLASSW(ctypes.Structure):
         _fields_ = [
             ("style", wintypes.UINT),
@@ -93,7 +98,7 @@ if IS_WINDOWS:
             ("cbWndExtra", ctypes.c_int),
             ("hInstance", wintypes.HINSTANCE),
             ("hIcon", wintypes.HICON),
-            ("hCursor", wintypes.HCURSOR),
+            ("hCursor", _HCURSOR),
             ("hbrBackground", wintypes.HBRUSH),
             ("lpszMenuName", wintypes.LPCWSTR),
             ("lpszClassName", wintypes.LPCWSTR),

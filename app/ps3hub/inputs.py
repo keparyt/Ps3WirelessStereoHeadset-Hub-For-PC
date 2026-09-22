@@ -60,8 +60,10 @@ DEBOUNCE_SECONDS = 0.035
 #   byte5=0x13 -> ChatMix Up
 #   byte5=0x14 -> ChatMix Down
 #
-# A marker is only used as a command when the state is already at that
-# control's physical boundary. Normal state changes remain authoritative.
+# Normal state changes remain authoritative. At the chat-mix physical
+# boundary, however, an unchanged 0x13/0x14 report is still a real directional
+# command for this project: there is no numeric state delta left to observe.
+# Those boundary reports are therefore delivered every time they arrive.
 OBSERVED_VOLUME_UP_MARKER = 0x11
 OBSERVED_VOLUME_DOWN_MARKER = 0x12
 OBSERVED_CHATMIX_UP_MARKER = 0x13
@@ -397,34 +399,33 @@ class EdgeDetector:
                 )
             ]
 
-        # At chat-mix min/max, the numeric state cannot move further.
-        # A new command is represented by a transition in the observed byte5
-        # marker. Repeated status packets with the same marker are not clicks.
-        if after in (CHAT_BALANCE_MIN, CHAT_BALANCE_MAX):
-            previous_marker = previous.unknown_bytes[0]
+        # At a physical chat-mix boundary there is no numeric state delta
+        # left to observe. For this headset the directional marker itself is
+        # therefore the command. Unlike volume, repeated 0x13/0x14 reports are
+        # intentionally kept as separate commands: each inbound report is an
+        # action attempt and must reach the mapped binding.
+        if after == CHAT_BALANCE_MAX and current.unknown_bytes[0] == OBSERVED_CHATMIX_UP_MARKER:
             marker = current.unknown_bytes[0]
-            if marker == previous_marker:
-                return []
-            if marker == OBSERVED_CHATMIX_UP_MARKER:
-                return [InputEvent(
-                    InputId.CHATMIX_UP,
-                    repeat=1,
-                    value=after,
-                    detail=(
-                        f"{after} -> {after} (chat boundary command; "
-                        f"byte5 0x{previous_marker:02X} -> 0x{marker:02X})"
-                    ),
-                )]
-            if marker == OBSERVED_CHATMIX_DOWN_MARKER:
-                return [InputEvent(
-                    InputId.CHATMIX_DOWN,
-                    repeat=1,
-                    value=after,
-                    detail=(
-                        f"{after} -> {after} (chat boundary command; "
-                        f"byte5 0x{previous_marker:02X} -> 0x{marker:02X})"
-                    ),
-                )]
+            return [InputEvent(
+                InputId.CHATMIX_UP,
+                repeat=1,
+                value=after,
+                detail=(
+                    f"{after} -> {after} (chat boundary command; "
+                    f"byte5 0x{marker:02X}, repeated reports are actionable)"
+                ),
+            )]
+        if after == CHAT_BALANCE_MIN and current.unknown_bytes[0] == OBSERVED_CHATMIX_DOWN_MARKER:
+            marker = current.unknown_bytes[0]
+            return [InputEvent(
+                InputId.CHATMIX_DOWN,
+                repeat=1,
+                value=after,
+                detail=(
+                    f"{after} -> {after} (chat boundary command; "
+                    f"byte5 0x{marker:02X}, repeated reports are actionable)"
+                ),
+            )]
         return []
 
     def _toggle_events(

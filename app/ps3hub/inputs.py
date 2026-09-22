@@ -53,9 +53,17 @@ SETTLE_SECONDS = 0.45
 DEBOUNCE_SECONDS = 0.035
 
 # Observed in the user's live B0 captures. These are deliberately marked
-# provisional until controlled captures confirm the mapping:
+# provisional until controlled captures confirm every headset action:
+#
+#   byte5=0x11 -> Volume Up
+#   byte5=0x12 -> Volume Down
 #   byte5=0x13 -> ChatMix Up
 #   byte5=0x14 -> ChatMix Down
+#
+# A marker is only used as a command when the state is already at that
+# control's physical boundary. Normal state changes remain authoritative.
+OBSERVED_VOLUME_UP_MARKER = 0x11
+OBSERVED_VOLUME_DOWN_MARKER = 0x12
 OBSERVED_CHATMIX_UP_MARKER = 0x13
 OBSERVED_CHATMIX_DOWN_MARKER = 0x14
 
@@ -338,16 +346,30 @@ class EdgeDetector:
                 for offset in range(1, abs(delta) + 1)
             ]
 
-        # At a physical boundary, the headset can report the same value again
-        # for another physical command. Replay the last volume direction.
+        # At a physical boundary, the numeric state cannot move further.
+        # The raw byte5 command marker tells us whether the physical control
+        # was turned UP or DOWN. Never inherit a previous chat-mix direction.
         if after in (VOLUME_MIN, VOLUME_MAX):
-            repeated = self._last_directional_input
-            if repeated in (InputId.VOLUME_UP, InputId.VOLUME_DOWN):
+            marker = current.unknown_bytes[0]
+            if marker == OBSERVED_VOLUME_UP_MARKER:
                 return [InputEvent(
-                    repeated,
+                    InputId.VOLUME_UP,
                     repeat=1,
                     value=after,
-                    detail=f"{after} -> {after} (boundary repeat)",
+                    detail=(
+                        f"{after} -> {after} (volume boundary repeat; "
+                        f"byte5=0x{marker:02X})"
+                    ),
+                )]
+            if marker == OBSERVED_VOLUME_DOWN_MARKER:
+                return [InputEvent(
+                    InputId.VOLUME_DOWN,
+                    repeat=1,
+                    value=after,
+                    detail=(
+                        f"{after} -> {after} (volume boundary repeat; "
+                        f"byte5=0x{marker:02X})"
+                    ),
                 )]
         return []
 
@@ -371,26 +393,27 @@ class EdgeDetector:
                 )
             ]
 
-        # At chat-mix min/max, an unchanged value is still actionable when
-        # the physical control is pressed farther in the same direction.
+        # At chat-mix min/max, the numeric state cannot move further.
+        # Only a chat-mix marker may create the additional mapped command.
         if after in (CHAT_BALANCE_MIN, CHAT_BALANCE_MAX):
-            # Prefer the observed raw byte marker because it survives a
-            # boundary hit even if the previous state did not move.
             marker = current.unknown_bytes[0]
             if marker == OBSERVED_CHATMIX_UP_MARKER:
-                repeated = InputId.CHATMIX_UP
-            elif marker == OBSERVED_CHATMIX_DOWN_MARKER:
-                repeated = InputId.CHATMIX_DOWN
-            else:
-                repeated = self._last_directional_input
-
-            if repeated in (InputId.CHATMIX_UP, InputId.CHATMIX_DOWN):
                 return [InputEvent(
-                    repeated,
+                    InputId.CHATMIX_UP,
                     repeat=1,
                     value=after,
                     detail=(
-                        f"{after} -> {after} (boundary repeat; "
+                        f"{after} -> {after} (chat boundary repeat; "
+                        f"byte5=0x{marker:02X})"
+                    ),
+                )]
+            if marker == OBSERVED_CHATMIX_DOWN_MARKER:
+                return [InputEvent(
+                    InputId.CHATMIX_DOWN,
+                    repeat=1,
+                    value=after,
+                    detail=(
+                        f"{after} -> {after} (chat boundary repeat; "
                         f"byte5=0x{marker:02X})"
                     ),
                 )]

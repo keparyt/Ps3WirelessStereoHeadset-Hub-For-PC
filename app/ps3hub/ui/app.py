@@ -28,18 +28,42 @@ from ..device import EventType, HeadsetService, ServiceEvent
 from ..inputs import InputEvent, InputId
 from ..mappings import Profile
 from ..notify import DesktopNotifier
+from ..notify_service import NotificationService
 from ..tray import TrayManager, format_tray_status
 from .theme import (
     ABYSS, DECK, FAINT, FAULT, ICE, IDLE, LIVE, MUTED, PANEL, PAPER, RIDGE,
     WARN, apply, fonts,
 )
+from .view_audio import AudioView
 from .view_dashboard import DashboardView
 from .view_diagnostics import DiagnosticsView
 from .view_mapping import MappingView
 from .view_settings import SettingsView
 from .widgets import NavButton, StatusPill
 
+#: Application-wide event bus. Tests may monkeypatch this import.
+try:
+    from ..events import bus as app_event_bus
+except Exception:  # pragma: no cover
+    app_event_bus = None
+
 log = get_logger("ui")
+
+
+class _TrayStateView:
+    """Adapter that pairs the service snapshot with the logical state.
+
+    ``format_tray_status`` reads ``headset_state`` for the logical volume and
+    every other attribute from the plain service snapshot.
+    """
+
+    def __init__(self, service_state: Any, headset_state: Any) -> None:
+        self._service_state = service_state
+        self.headset_state = headset_state
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._service_state, name)
+
 
 TICK_MS = 70
 REFRESH_MS = 160
@@ -48,6 +72,16 @@ STATUS_CLEAR_MS = 6000
 
 MIN_WIDTH = 1040
 MIN_HEIGHT = 680
+
+
+def _load_audio_engine():
+    """Create the AudioEngine, or None when audio deps are missing."""
+    try:
+        from ..audio import AudioEngine
+        return AudioEngine()
+    except Exception as exc:
+        log.warning("Audio engine unavailable: %s", exc)
+        return None
 
 
 class HubApp(tk.Tk):
@@ -92,6 +126,24 @@ class HubApp(tk.Tk):
         # binding. Both can be turned off in Settings.
         self._notifier = DesktopNotifier(APP_NAME)
 
+        # Event-driven notifications: the dispatch thread publishes logical
+        # state changes on the bus; the service decides what deserves a toast.
+        self._notify_service = NotificationService(self._notifier)
+        self._notify_service.attach(app_event_bus)
+        self._notify_service.apply_settings(
+            connection=self._config.settings.notify_connection,
+            volume=self._config.settings.notify_volume,
+            audio=self._config.settings.notify_audio,
+        )
+
+        # Audio subsystem: loopback DSP + device monitor + optional FxSound.
+        self._audio = _load_audio_engine()
+        if self._audio is not None:
+            self._audio.import_state(self._config.audio)
+            self._audio.start()
+            if self._config.audio.get("enabled"):
+                self._audio.set_enabled(True, self._config.audio.get("backend", "native"))
+
         self._runner = ActionRunner(ActionContext(
             keys=KeySender(),
             notify=self._notify_threadsafe,
@@ -105,7 +157,10 @@ class HubApp(tk.Tk):
 
         if self._tray_mode:
             self._tray = TrayManager(
-                status_provider=lambda: format_tray_status(self._service.snapshot()),
+                status_provider=lambda: format_tray_status(
+                    _TrayStateView(self._service.snapshot(),
+                                   self._service.headset_state())
+                ),
                 on_open=lambda: self._ui_requests.put(self._bring_to_front),
                 on_hide=lambda: self._ui_requests.put(self._hide_to_tray),
                 on_refresh=self._service.request_scan,
@@ -147,6 +202,7 @@ class HubApp(tk.Tk):
         self._nav: dict[str, NavButton] = {}
         for key, label, glyph in (
             ("dashboard", "Dashboard", "◉"),
+            ("audio", "Audio", "♪"),
             ("mapping", "Mapping", "⌘"),
             ("diagnostics", "Diagnostics", "≡"),
             ("settings", "Settings", "⚙"),
@@ -199,7 +255,11 @@ class HubApp(tk.Tk):
 
         # -- views -------------------------------------------------------------
         self._views: dict[str, tk.Frame] = {}
-        self._dashboard = DashboardView(self._content, self._get_profile)
+        self._dashboard = DashboardView(
+            self._content, self._get_profile,
+            audio_provider=(lambda: self._audio.as_dict()
+                            if self._audio is not None else None),
+        )
         self._mapping = MappingView(
             self._content,
             profile_getter=self._get_profile,
@@ -211,6 +271,11 @@ class HubApp(tk.Tk):
         )
         self._mapping.set_test_callback(self._test_action)
         self._diagnostics = DiagnosticsView(self._content, self._service)
+        self._audio_view = AudioView(
+            self._content,
+            engine_provider=lambda: self._audio,
+            on_changed=self._schedule_save,
+        )
         self._settings = SettingsView(
             self._content,
             settings_getter=lambda: self._config.settings,
@@ -219,6 +284,7 @@ class HubApp(tk.Tk):
         )
         self._views = {
             "dashboard": self._dashboard,
+            "audio": self._audio_view,
             "mapping": self._mapping,
             "diagnostics": self._diagnostics,
             "settings": self._settings,
@@ -266,12 +332,14 @@ class HubApp(tk.Tk):
         self._current = key
         self._heading.configure(text={
             "dashboard": "Dashboard",
+            "audio": "Audio",
             "mapping": "Mapping",
             "diagnostics": "Diagnostics",
             "settings": "Settings",
         }[key])
         self._subheading.configure(text={
             "dashboard": "live headset state",
+            "audio": "Windows audio processing",
             "mapping": "bind headset controls to actions",
             "diagnostics": "reports, collections and logs",
             "settings": "preferences and detection tuning",
@@ -451,6 +519,8 @@ class HubApp(tk.Tk):
         current = self._current
         if current == "dashboard":
             self._dashboard.refresh(state, self._get_profile())
+        elif current == "audio" and self._audio is not None:
+            self._audio_view.refresh()
         elif current == "diagnostics":
             self._diagnostics.refresh(state)
 
@@ -494,6 +564,11 @@ class HubApp(tk.Tk):
         self._config.settings = settings
         self._master_var.set(settings.mappings_enabled)
 
+        self._notify_service.apply_settings(
+            connection=settings.notify_connection,
+            volume=settings.notify_volume,
+            audio=settings.notify_audio,
+        )
         self._service.configure_detection(
             settings.settle_seconds, settings.debounce_seconds,
             settings.resync_threshold, settings.low_battery_threshold,
@@ -527,6 +602,8 @@ class HubApp(tk.Tk):
             self._config.settings.window_geometry = self.geometry()
         except Exception:
             pass
+        if self._audio is not None:
+            self._config.audio = self._audio.export_state()
         with self._profile_lock:
             ok = self._store.save(self._config)
         if ok:
@@ -569,6 +646,9 @@ class HubApp(tk.Tk):
             self._config.settings.low_battery_threshold,
         )
         self._service.read_all_collections = self._config.settings.read_all_collections
+        if self._audio is not None:
+            self._audio.import_state(self._config.audio)
+            self._audio_view.refresh()
         self._settings.reload()
         self._mapping.reload()
         self._save_now()
@@ -619,6 +699,11 @@ class HubApp(tk.Tk):
         self._shutting_down = True
         log.info("Shutting down")
         self._save_geometry()
+        try:
+            if self._audio is not None:
+                self._audio.shutdown()
+        except Exception:
+            log.exception("Could not stop the audio engine cleanly")
         try:
             self._service.stop()
         except Exception:

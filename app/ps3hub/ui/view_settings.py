@@ -70,6 +70,21 @@ class SettingsView(tk.Frame):
             "Show a Windows notification each time a binding carries out an "
             "action, naming the control and the action.",
         )
+        self._notify_connection = self._checkbox(
+            behaviour.body, "Notify on headset connect and disconnect",
+            "Show a Windows notification when the headset links to or leaves "
+            "the receiver.",
+        )
+        self._notify_volume = self._checkbox(
+            behaviour.body, "Notify on volume changes",
+            "Show a Windows notification with a volume meter when the headset "
+            "volume changes. Rapid changes are bundled automatically.",
+        )
+        self._notify_audio = self._checkbox(
+            behaviour.body, "Notify about audio processing",
+            "Show a Windows notification when audio processing starts or "
+            "reports a problem.",
+        )
         self._show_raw = self._checkbox(
             behaviour.body, "Show raw report bytes",
             "Display the hexadecimal report on the dashboard and in diagnostics.",
@@ -216,6 +231,9 @@ class SettingsView(tk.Frame):
         self._show_raw.set(settings.show_raw_reports)
         self._verbose.set(settings.verbose_logging)
         self._read_all.set(settings.read_all_collections)
+        self._notify_connection.set(settings.notify_connection)
+        self._notify_volume.set(settings.notify_volume)
+        self._notify_audio.set(settings.notify_audio)
         self._settle.set(str(int(settings.settle_seconds * 1000)))
         self._debounce.set(str(int(settings.debounce_seconds * 1000)))
         self._resync.set(str(settings.resync_threshold))
@@ -242,5 +260,8 @@ class SettingsView(tk.Frame):
             verbose_logging=self._verbose.get(),
             show_raw_reports=self._show_raw.get(),
             window_geometry=current.window_geometry,
+            notify_connection=self._notify_connection.get(),
+            notify_volume=self._notify_volume.get(),
+            notify_audio=self._notify_audio.get(),
         ).clamped()
         self._on_changed(updated)

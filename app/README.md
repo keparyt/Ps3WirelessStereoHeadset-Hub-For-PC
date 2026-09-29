@@ -127,11 +127,90 @@ wheel to wake it.
 
 ## Volume and the 10 steps
 
-The headset has **10 discrete volume steps**, reported as `0x00`–`0x0A`. The
-app shows a percentage for readability, but the meter is drawn as ten separate
-segments so the real resolution stays visible. Nothing here pretends to
-continuous volume control, and a raw value outside `0x00`–`0x0A` is reported as
-unknown rather than guessed at.
+The **receiver** reports six discrete volume levels, `0x00`–`0x05`. The
+headset's own scale is finer, but the receiver halves it, so the odd steps
+never appear in a status report. Cross-checked against the
+[counter185/hid-playstation-headset](https://github.com/counter185/hid-playstation-headset)
+reference driver and live captures: raw `0x05` is genuinely 100%, raw `0x00`
+is 0%.
+
+The app maps those six levels onto a **logical 10-step meter** (raw 0..5 →
+logical 0, 2, 4, 6, 8, 10) so the meter, the tray and the notifications all
+show the same single source of truth: real percentages (`step × 10`) with no
+invented precision. A raw value outside `0x00`–`0x05` is reported as unknown
+rather than guessed at. See `ps3hub/state.py` for the mapping and its
+rationale.
+
+## Audio processing (new)
+
+The Hub can process the Windows default output through its own DSP:
+bass, clarity, ambience, surround, dynamic boost and master gain, on the
+**Audio** page. Processing taps the Windows loopback of the default output,
+so it follows device changes automatically, and a flat profile is measured
+transparent (−0.00 dB).
+
+If [FxSound](https://www.fxsound.com/) is installed, the Hub can instead drive
+that application through its documented command-line interface (`--power`,
+`--preset`, `--set_effect`, `--master_gain`, `--status`). FxSound is not
+bundled, not linked and not copied; the integration only sends CLI commands to
+an installation the user already has, and the Hub works fully without it.
+
+---
+
+## The equalizer
+
+The **Audio** page has a full graphic equalizer: a band-count selector
+(5, 10, 15, 20 or 31), a response graph whose points you drag to shape the
+curve, and a dB readout on every point. Beside it are the four controls
+FxSound puts next to its own curve — **Master gain**, **Volume leveling**,
+**Filter Q** and **Balance**.
+
+**Dragging** a point moves it vertically, between −12 and +12 dB.
+**Double-clicking** a point flattens just that band. The x axis is
+logarithmic, because that is how people hear: an octave is the same width on
+screen whatever its frequency.
+
+Whichever processor is active applies the curve. With FxSound as the backend
+the Hub sends the band gains through the documented CLI
+(`--set_band_gain`, `--set_band_freq`, `--num_bands`, `--filter_q`,
+`--volume_leveling`, `--balance`), so the EQ runs on FxSound's own drivers and
+DSP rather than a reimplementation of it. With the Hub's own loopback engine
+the same curve is applied as one peaking biquad per non-flat band, which the
+test suite measures: a +6 dB band comes out **+6.00 dB** at its own centre
+frequency, and **0.07 dB** away from it.
+
+### Preset files (`.fac`)
+
+FxSound stores each preset as a small line-oriented text file with a `.fac`
+extension. The Hub reads and writes that format, so its profiles and FxSound's
+presets are the same thing:
+
+* **Import .fac…** loads any preset file and draws its curve.
+* **Export .fac…** writes the current curve out as a preset file.
+* **Load** applies the preset selected in the dropdown to the running
+  application, then reads the result back so the graph shows what was actually
+  applied rather than what was requested.
+* **Save as…** stores the running settings as a new FxSound user preset.
+
+Loading `Extreme Bass.fac` and exporting it again produces a **byte-identical**
+file, which is the test that the format is understood rather than approximated.
+
+The format is not documented by the vendor, so it was established empirically
+against FxSound 1.2.13.0. Two details are worth knowing if you edit a preset by
+hand: the value comes **before** the colon (`25: CF` means 25 Hz, not the
+string "CF"), and boost/cut values are fractional, not whole numbers.
+
+### Choosing the output device
+
+The **Audio processing** card lists every active output device and can make
+any of them the Windows default, plus a toggle to do it automatically when the
+headset connects.
+
+One honest caveat, learned the hard way: on a machine with an audio
+enhancement driver installed (FxSound installs one), that driver can
+immediately re-assert its own endpoint as the default. When that happens the
+Hub says so rather than reporting a success that did not happen — it reads the
+default endpoint back after the change and tells you the truth either way.
 
 ---
 
@@ -140,14 +219,27 @@ unknown rather than guessed at.
 Layered so that nothing below the UI knows the UI exists.
 
 ```
-protocol.py     pure byte decoding, zero I/O, fully unit tested
-hid_reader.py   native Windows overlapped HID reads
-inputs.py       state deltas -> discrete input events
-actions.py      actions and Windows SendInput injection
-mappings.py     input -> action binding model
-config.py       atomic persistence
-device.py       enumeration, hotplug, dispatch
-ui/             presentation only
+protocol.py       pure byte decoding, zero I/O, fully unit tested
+hid_reader.py     native Windows overlapped HID reads
+inputs.py         state deltas -> discrete input events
+state.py          logical headset state, the single source of truth
+events.py         application event bus (change-only publication)
+notify_rules.py   notification policy: what deserves a toast
+notify_service.py bus -> policy -> Windows toast wiring
+actions.py        actions and Windows SendInput injection
+mappings.py       input -> action binding model
+config.py         atomic persistence (schema v2: bindings + audio profiles)
+device.py         enumeration, hotplug, dispatch, event publication
+audio/            loopback DSP, device monitor, profiles, FxSound CLI
+  dsp.py          biquads; spectrum_peak_db is the measurement hook
+  loopback_dsp.py WASAPI loopback capture -> biquads -> render
+  device_monitor.py  MMDevice enumeration, notifications, output switching
+  profiles.py     per-endpoint effect + equalizer settings
+  fxsound_backend.py  drives an installed FxSound over its documented CLI
+  fac.py          read/write FxSound .fac preset files
+  engine.py       the facade the UI talks to
+ui/               presentation only
+  widget_eq.py    the draggable equalizer graph
 ```
 
 **Threading.** Reader threads only enqueue raw bytes. A single dispatch thread
@@ -175,6 +267,8 @@ original protocol tests still pass unmodified. Enumeration remains on hidapi.
   than discarded, and the app still starts.
 - Bindings referencing an unknown action degrade to unbound instead of
   preventing startup.
+- The audio engine is optional: without `sounddevice`/`numpy` the Hub runs
+  normally and simply reports that processing is unavailable.
 
 ---
 
@@ -187,6 +281,12 @@ python tests\smoke_ui.py                  # builds and drives the whole UI
 
 The smoke test walks every view, both editing paths and synthetic device
 traffic. It catches Tk mistakes that compiling cannot.
+
+`ps3hub/audio/fac.py` has its own tests that assert a parse-then-write cycle
+reproduces real FxSound-authored preset files byte for byte. The DSP tests in
+`tests/test_equalizer.py` measure the audio rather than the code: they assert
+that a boosted band is measurably louder at its own frequency and measurably
+*not* louder elsewhere.
 
 `protocol.py` has no I/O at all, so recorded captures can be replayed against
 the decoder without hardware.

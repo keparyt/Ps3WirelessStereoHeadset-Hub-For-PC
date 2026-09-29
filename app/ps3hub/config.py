@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .applog import data_dir, get_logger
+from .audio.profiles import AudioProfile, ProfileStore
 from .inputs import DEBOUNCE_SECONDS, RESYNC_THRESHOLD, SETTLE_SECONDS
 from .mappings import Profile
 from .protocol import BATTERY_LOW_THRESHOLD
@@ -28,8 +29,11 @@ DEFAULT_LOW_BATTERY_THRESHOLD = 5
 
 log = get_logger("config")
 
-CONFIG_VERSION = 1
+CONFIG_VERSION = 2
 CONFIG_FILENAME = "config.json"
+
+#: Audio settings stored alongside the profiles in the ``audio`` key.
+AUDIO_BACKENDS = ("native", "fxsound")
 
 
 @dataclass
@@ -54,6 +58,11 @@ class Settings:
     verbose_logging: bool = False
     show_raw_reports: bool = True
     window_geometry: str = ""
+    #: Toast categories (the rules engine can be tuned per category; these are
+    #: the switches the Settings page exposes).
+    notify_connection: bool = True
+    notify_volume: bool = True
+    notify_audio: bool = True
 
     def clamped(self) -> "Settings":
         """Keep hand-edited values inside ranges the app can actually honour."""
@@ -73,6 +82,9 @@ class Settings:
             verbose_logging=bool(self.verbose_logging),
             show_raw_reports=bool(self.show_raw_reports),
             window_geometry=str(self.window_geometry or ""),
+            notify_connection=bool(self.notify_connection),
+            notify_volume=bool(self.notify_volume),
+            notify_audio=bool(self.notify_audio),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -107,17 +119,39 @@ def _clamp_float(value: Any, low: float, high: float, fallback: float) -> float:
 class AppConfig:
     settings: Settings = field(default_factory=Settings)
     profile: Profile = field(default_factory=Profile.default)
+    #: Per-endpoint audio effect profiles plus the engine switches.
+    audio: dict[str, Any] = field(
+        default_factory=lambda: {"enabled": False, "backend": "native",
+                                 "profiles": []}
+    )
+
+    def audio_store(self) -> ProfileStore:
+        """The per-device profiles as a :class:`ProfileStore`."""
+        return ProfileStore.from_dict(self.audio)
+
+    def set_audio_store(self, store: ProfileStore, enabled: bool | None = None,
+                        backend: str | None = None) -> None:
+        payload = store.to_dict()
+        payload["enabled"] = (
+            bool(self.audio.get("enabled", False)) if enabled is None else bool(enabled)
+        )
+        current_backend = str(self.audio.get("backend", "native"))
+        payload["backend"] = current_backend if backend is None else str(backend)
+        if payload["backend"] not in AUDIO_BACKENDS:
+            payload["backend"] = "native"
+        self.audio = payload
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "version": CONFIG_VERSION,
             "settings": self.settings.to_dict(),
             "profile": self.profile.to_dict(),
+            "audio": dict(self.audio),
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AppConfig":
-        version = data.get("version", CONFIG_VERSION)
+        version = data.get("version", 1)
         if version != CONFIG_VERSION:
             data = migrate(data, version)
         settings = Settings.from_dict(data.get("settings") or {})
@@ -127,16 +161,38 @@ class AppConfig:
         else:
             log.warning("No profile in the configuration; loading defaults")
             profile = Profile.default()
-        return cls(settings=settings, profile=profile)
+        audio = _sanitise_audio(data.get("audio"))
+        return cls(settings=settings, profile=profile, audio=audio)
+
+
+def _sanitise_audio(raw: Any) -> dict[str, Any]:
+    """Validate the audio payload so a corrupt entry degrades to defaults."""
+    audio: dict[str, Any] = {
+        "enabled": False, "backend": "native", "profiles": [], "auto_output": False,
+    }
+    if not isinstance(raw, dict):
+        return audio
+    backend = str(raw.get("backend", "native"))
+    audio["backend"] = backend if backend in AUDIO_BACKENDS else "native"
+    audio["enabled"] = bool(raw.get("enabled", False))
+    audio["auto_output"] = bool(raw.get("auto_output", False))
+    profiles = raw.get("profiles")
+    audio["profiles"] = profiles if isinstance(profiles, list) else []
+    return audio
 
 
 def migrate(data: dict[str, Any], from_version: Any) -> dict[str, Any]:
-    """Bring an older configuration forward.
+    """Bring an older configuration forward without losing user data.
 
-    There is only one schema version today. The hook exists so a future
-    version can change shape without discarding a user's bindings.
+    v1 -> v2: the ``audio`` key (per-endpoint effect profiles and engine
+    switches) is new. Everything a v1 file contained is kept as-is; only the
+    missing key is added. Unknown future versions keep their shape and are
+    validated key-by-key on load, so a downgrade is not destructive either.
     """
     log.info("Migrating configuration from version %r", from_version)
+    if isinstance(data, dict) and "audio" not in data:
+        data["audio"] = {"enabled": False, "backend": "native", "profiles": [],
+                         "auto_output": False}
     return data
 
 
@@ -165,8 +221,8 @@ class ConfigStore:
                 raise ValueError("the configuration file is not a JSON object")
             config = AppConfig.from_dict(data)
             log.info(
-                "Loaded configuration: %d binding(s) from %s",
-                len(config.profile), self.path,
+                "Loaded configuration: %d binding(s), %d audio profile(s) from %s",
+                len(config.profile), len(config.audio.get("profiles", [])), self.path,
             )
             return config
         except Exception as exc:

@@ -11,6 +11,7 @@ from ..device import EventType, ServiceEvent, ServiceState
 from ..inputs import describe_input
 from ..mappings import Profile
 from ..protocol import TARGET_ADAPTER_MODEL, TARGET_HEADSET_MODEL
+from ..state import logical_to_percent, raw_to_logical
 from .theme import (
     ABYSS, FAINT, FAULT, ICE, IDLE, LIVE, MUTED, PANEL, PAPER, RIDGE, WARN, fonts,
 )
@@ -23,9 +24,10 @@ FEED_LIMIT = 40
 
 
 class DashboardView(tk.Frame):
-    def __init__(self, master, profile_getter) -> None:
+    def __init__(self, master, profile_getter, audio_provider=None) -> None:
         super().__init__(master, bg=ABYSS)
         self._profile_getter = profile_getter
+        self._audio_provider = audio_provider
         self._feed: Deque[tuple[float, str, str]] = deque(maxlen=FEED_LIMIT)
         self._feed_dirty = True
         self._build()
@@ -112,6 +114,21 @@ class DashboardView(tk.Frame):
         self._feed_empty.pack(anchor="w")
         self._feed_rows: list[tk.Frame] = []
 
+        # -- audio processing -------------------------------------------------
+        audio_card = Card(root, "Audio processing", "Windows loopback DSP")
+        audio_card.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        audio_box = tk.Frame(audio_card.body, bg=PANEL)
+        audio_box.pack(fill="x")
+        audio_box.columnconfigure(1, weight=1)
+        self._audio_pill = StatusPill(audio_box, "Off", IDLE, bg=PANEL, width=150)
+        self._audio_pill.grid(row=0, column=0, sticky="w", padx=(0, 18))
+        self._audio_detail = tk.Label(
+            audio_box, text="Audio processing is off. Enable it on the Audio page.",
+            bg=PANEL, fg=FAINT, font=font.small, anchor="w", justify="left",
+            wraplength=560,
+        )
+        self._audio_detail.grid(row=0, column=1, sticky="w")
+
         # -- bindings summary ------------------------------------------------
         bindings = Card(root, "Active bindings")
         bindings.grid(row=2, column=0, columnspan=2, sticky="ew")
@@ -133,14 +150,10 @@ class DashboardView(tk.Frame):
                 # the displayed volume. Never increment/decrement a local UI
                 # counter from INPUT events; that could drift if a HID report
                 # is missed, duplicated, or arrives out of order.
-                volume_level_10 = (
-                    min(10, max(0, snapshot.volume_level * 2))
-                    if snapshot.volume_level is not None
-                    else None
-                )
+                volume_level_10 = raw_to_logical(snapshot.volume_level)
                 self._volume.set(
                     volume_level_10,
-                    volume_level_10 * 10 if volume_level_10 is not None else None,
+                    logical_to_percent(volume_level_10),
                     muted=snapshot.mic_muted,
                 )
                 self._battery.set(snapshot.battery_percent, snapshot.charging)
@@ -179,14 +192,10 @@ class DashboardView(tk.Frame):
             self._link_pill.set("Headset off", IDLE)
 
         if snapshot is not None and state.headset_linked:
-            volume_level_10 = (
-                min(10, max(0, snapshot.volume_level * 2))
-                if snapshot.volume_level is not None
-                else None
-            )
+            volume_level_10 = raw_to_logical(snapshot.volume_level)
             self._volume.set(
                 volume_level_10,
-                volume_level_10 * 10 if volume_level_10 is not None else None,
+                logical_to_percent(volume_level_10),
                 muted=snapshot.mic_muted,
             )
             self._battery.set(snapshot.battery_percent, snapshot.charging)
@@ -200,7 +209,6 @@ class DashboardView(tk.Frame):
                 WARN if snapshot.mic_muted else LIVE,
             )
         else:
-            self._volume_level_10 = None
             self._volume.set(None, None)
             self._battery.set(None, False)
             self._balance.set(None)
@@ -252,6 +260,41 @@ class DashboardView(tk.Frame):
             self._render_feed()
             self._feed_dirty = False
         self._render_bindings(profile)
+        self._render_audio()
+
+    def _render_audio(self) -> None:
+        """Paint the audio card from the engine facade, never from HID data."""
+        if self._audio_provider is None:
+            return
+        try:
+            info = self._audio_provider()
+        except Exception:
+            info = None
+        if not info:
+            return
+        processing = info.get("processing") or {}
+        if info.get("enabled") and processing.get("active"):
+            self._audio_pill.set("Processing", LIVE)
+            device = processing.get("device_name") or "--"
+            rate = processing.get("sample_rate") or 0
+            drops = processing.get("drops") or 0
+            detail = f"{device} · {rate / 1000:.1f} kHz"
+            if drops:
+                detail += f" · {drops} dropped blocks"
+            self._audio_detail.configure(
+                text=detail,
+                fg=MUTED if not drops else WARN,
+            )
+        elif info.get("enabled"):
+            self._audio_pill.set("Starting", WARN)
+            error = processing.get("error") or "waiting for the default output"
+            self._audio_detail.configure(text=error, fg=WARN)
+        else:
+            self._audio_pill.set("Off", IDLE)
+            self._audio_detail.configure(
+                text="Audio processing is off. Enable it on the Audio page.",
+                fg=FAINT,
+            )
 
     # -------------------------------------------------------------- render --
 

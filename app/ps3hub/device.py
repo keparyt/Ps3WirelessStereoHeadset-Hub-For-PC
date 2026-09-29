@@ -35,6 +35,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
 from .applog import get_logger
+from .events import AppEvent, EventBus, Event, bus as app_bus
 from .hid_reader import (
     DeviceGoneError,
     HidApiReader,
@@ -55,6 +56,7 @@ from .protocol import (
     is_status_collection,
     parse_status,
 )
+from .state import HeadsetState, HeadsetStateTracker
 
 log = get_logger("device")
 
@@ -175,6 +177,11 @@ class HeadsetService:
         self._scan_request = threading.Event()
         self._input_handler = input_handler
         self.read_all_collections = read_all_collections
+        # Logical state: one tracker owned by the dispatch thread, published
+        # as immutable HeadsetState snapshots; the app-wide event bus gets
+        # told exactly which user-visible fields moved.
+        self._tracker = HeadsetStateTracker()
+        self._bus: EventBus = app_bus
 
         detector_kwargs: dict[str, Any] = {}
         if settle_seconds is not None:
@@ -221,6 +228,14 @@ class HeadsetService:
             return sorted(
                 self._fingerprints.values(), key=lambda f: f.count, reverse=True
             )
+
+    def headset_state(self) -> HeadsetState:
+        """The current logical headset state (immutable snapshot)."""
+        return self._tracker.state
+
+    def set_event_bus(self, new_bus: EventBus) -> None:
+        """Replace the app event bus (tests inject an isolated one)."""
+        self._bus = new_bus
 
     def _emit(self, event: ServiceEvent) -> None:
         try:
@@ -510,6 +525,11 @@ class HeadsetService:
             self._state.snapshot = None
             self._state.last_status_time = None
             self._collections = {}
+        was_linked = self._tracker.state.linked
+        self._tracker.reset()
+        if was_linked:
+            self._bus.publish(AppEvent.HEADSET_UNLINKED, self._tracker.state)
+        self._bus.publish(AppEvent.RECEIVER_DETACHED, self._tracker.state)
         self._emit(ServiceEvent(
             EventType.RECEIVER_DETACHED, "USB receiver disconnected"
         ))
@@ -628,6 +648,14 @@ class HeadsetService:
             self._state.status_reports += 1
             self._state.last_status_time = now
 
+        # Fold the snapshot into the logical state and publish exactly the
+        # app events for the fields that actually moved. The tracker owns the
+        # receiver-present flag too, so restore it after a reset.
+        new_state, changes = self._tracker.update(snapshot)
+        if not new_state.receiver_present:
+            new_state = self._tracker.set_receiver(True)
+        self._publish_state_events(new_state, changes)
+
         self._emit(ServiceEvent(
             EventType.STATUS,
             snapshot.raw_hex,
@@ -643,6 +671,34 @@ class HeadsetService:
         for event in self._detector.feed(snapshot, now=now):
             self._handle_input(event)
 
+    def _publish_state_events(self, state: HeadsetState, changes: dict[str, bool]) -> None:
+        """Publish bus events for the user-visible fields that moved.
+
+        Fires only on change, which is the anti-spam guarantee: repeated
+        identical status reports produce no bus traffic at all.
+        """
+        if changes.get("linked"):
+            if state.linked:
+                self._bus.publish(AppEvent.HEADSET_LINKED, state)
+            else:
+                self._bus.publish(AppEvent.HEADSET_UNLINKED, state)
+        if changes.get("volume"):
+            self._bus.publish(AppEvent.VOLUME_CHANGED, state)
+        if changes.get("chat_balance"):
+            self._bus.publish(AppEvent.CHAT_BALANCE_CHANGED, state)
+        if changes.get("battery"):
+            self._bus.publish(AppEvent.BATTERY_CHANGED, state)
+        if state.battery_low and changes.get("battery"):
+            self._bus.publish(AppEvent.BATTERY_LOW, state)
+        if changes.get("vss"):
+            self._bus.publish(AppEvent.VSS_CHANGED, state)
+        if changes.get("mic"):
+            self._bus.publish(AppEvent.MIC_CHANGED, state)
+        if changes.get("battery") and state.charging:
+            self._bus.publish(AppEvent.CHARGING_STARTED, state)
+        elif changes.get("battery") and not state.charging and state.battery_percent is not None:
+            self._bus.publish(AppEvent.CHARGING_STOPPED, state)
+
     def _handle_input(self, event: InputEvent) -> None:
         with self._lock:
             self._state.inputs_detected += 1
@@ -652,6 +708,11 @@ class HeadsetService:
             EventType.INPUT, str(event), input_event=event,
             payload={"repeat": event.repeat, "detail": event.detail},
         ))
+        self._bus.publish(
+            AppEvent.INPUT_EVENT, self._tracker.state,
+            input_id=str(event.input_id), value=event.value,
+            repeat=event.repeat, detail=event.detail,
+        )
         log.info(
             "INPUT #%06d | %s | repeat=%d | value=%s | detail=%s",
             self._state.inputs_detected, event.input_id, event.repeat,

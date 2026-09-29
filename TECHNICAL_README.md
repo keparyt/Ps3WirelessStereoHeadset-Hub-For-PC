@@ -274,15 +274,35 @@ The current protocol implementation recognizes a raw volume range of:
 05
 ```
 
-The application may present this as a user-friendly scale.
+**Confirmed range: `0x00`–`0x05` (six levels).** An earlier revision of this
+project claimed a ten-level range (`0x00`–`0x0A`). That claim conflated the
+headset's internal volume scale with what the receiver actually reports and
+has been corrected. The cross-checks that settled it:
 
-Important distinction:
+* the [counter185/hid-playstation-headset](https://github.com/counter185/hid-playstation-headset)
+  reference driver documents the same six-level receiver range, noting the
+  headset's own scale is finer and is halved by the receiver;
+* live captures on the reference hardware never show byte 1 above `0x05`;
+* raw `0x05` corresponds to maximum audible volume, raw `0x00` to silence.
+
+Presentation mapping (application layer, `app/ps3hub/state.py`):
+
+```
+raw 0..5  ->  logical 0, 2, 4, 6, 8, 10  ->  percent 0, 20, 40, 60, 80, 100
+```
+
+The odd logical steps exist for UI continuity but are never reported by the
+hardware, so the app never displays them as measurements. `volume_percent ==
+logical_step × 10` holds exactly.
+
+Important distinction, unchanged:
 
 ```
 raw protocol value ≠ necessarily UI percentage
 ```
 
-A protocol field should remain represented in its raw form internally whenever possible, with presentation conversion happening at the application layer.
+A protocol field remains represented in its raw form internally; the
+presentation conversion lives in `state.py`, not in the decoder.
 
 ---
 

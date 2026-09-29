@@ -27,7 +27,15 @@ TARGET_HEADSET_MARKING = "[NO60]"
 TARGET_ADAPTER_MODEL = "CUHYA-0081"
 
 VOLUME_MIN = 0x00
-VOLUME_MAX = 0x0A  # 10 volume levels: 0..10
+# CORRECTED: the Gold V1 receiver (12BA:0035) reports SIX levels, 0x00-0x05,
+# not ten. The earlier 0x0A claim here conflated the headset's internal scale
+# with what the receiver actually reports. Cross-checked against the
+# counter185/hid-playstation-headset reference driver and live captures:
+# raw 0x05 is the maximum observable value on this receiver. The headset
+# itself has a finer scale which the receiver halves; the odd steps are never
+# seen in a B0 report. The app maps raw 0..5 onto a logical 10-step meter
+# (see app/ps3hub/state.py).
+VOLUME_MAX = 0x05  # 6 receiver levels: 0x00-0x05
 CHAT_BALANCE_MIN = 0x00
 CHAT_BALANCE_MAX = 0x64
 BATTERY_MIN = 0x00
@@ -55,7 +63,12 @@ def decode_b0(report: bytes) -> dict[str, Any] | None:
     flags = report[4]
 
     volume_level = volume_raw if VOLUME_MIN <= volume_raw <= VOLUME_MAX else None
-    volume_percent = volume_level * 10 if volume_level is not None else None
+    # Presentation mapping: receiver's 6 levels onto 0-100%.
+    volume_percent = (
+        round(volume_level * 100 / (VOLUME_MAX - VOLUME_MIN))
+        if volume_level is not None
+        else None
+    )
     chat_balance = (
         chat_balance_raw
         if CHAT_BALANCE_MIN <= chat_balance_raw <= CHAT_BALANCE_MAX

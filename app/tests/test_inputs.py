@@ -70,12 +70,14 @@ def test_volume_up_one_step():
     assert events[0].value == 5
 
 
-def test_volume_down_reports_the_step_count():
+def test_volume_down_multi_step_reports_each_step():
+    """A two-step downward move is two logical events (one per step)."""
     det = detector()
-    det.feed(snap(volume=6), now=0.0)
-    events = det.feed(snap(volume=4), now=1.0)
-    assert ids(events) == [InputId.VOLUME_DOWN]
-    assert events[0].repeat == 2
+    det.feed(snap(volume=4), now=0.0)
+    events = det.feed(snap(volume=2), now=1.0)
+    assert ids(events) == [InputId.VOLUME_DOWN, InputId.VOLUME_DOWN]
+    assert all(event.repeat == 1 for event in events)
+    assert [event.value for event in events] == [3, 2]
 
 
 def test_identical_report_produces_nothing():
@@ -226,21 +228,41 @@ def test_reset_clears_the_baseline():
 
 # ---------------------------------------------------------------- guards --
 
-def test_settle_window_suppresses_echoed_state():
+def test_settle_window_suppresses_echoed_toggles_not_directional_input():
+    """The settle window guards toggle/button echoes; directional volume
+    commands are delivered regardless, because a human turning the wheel
+    immediately after connecting is a real press."""
     det = EdgeDetector(settle_seconds=0.5, debounce_seconds=0.0)
-    det.feed(snap(volume=5), now=0.0)
-    # The receiver repeats itself 100 ms later with a different volume.
-    assert det.feed(snap(volume=6), now=0.1) == []
-    # After the window, real presses come through.
-    assert ids(det.feed(snap(volume=7), now=1.0)) == [InputId.VOLUME_UP]
+    det.feed(snap(volume=5, vss=False), now=0.0)
+    # A toggle echo inside the window is suppressed.
+    assert det.feed(snap(volume=5, vss=True), now=0.1) == []
+    # Directional volume movement is still delivered inside the window.
+    assert ids(det.feed(snap(volume=4, vss=True), now=0.2)) == [InputId.VOLUME_DOWN]
+    # After the window everything comes through.
+    assert ids(det.feed(snap(volume=3, vss=True), now=1.0)) == [InputId.VOLUME_DOWN]
 
 
-def test_debounce_collapses_rapid_duplicates():
+def test_debounce_collapses_rapid_duplicate_toggles_not_volume():
+    """Debounce must never destroy legitimate repeated volume movement:
+    five wheel steps are five events even when they arrive in quick
+    succession. It still collapses genuinely duplicate toggle presses."""
     det = EdgeDetector(settle_seconds=0.0, debounce_seconds=0.1)
-    det.feed(snap(volume=4), now=0.0)
-    assert ids(det.feed(snap(volume=5), now=1.00)) == [InputId.VOLUME_UP]
-    assert det.feed(snap(volume=6), now=1.02) == []
-    assert ids(det.feed(snap(volume=7), now=1.50)) == [InputId.VOLUME_UP]
+    det.feed(snap(volume=0, vss=False), now=0.0)
+    # Repeated volume movement inside the debounce window survives.
+    for index in range(1, 6):
+        events = det.feed(snap(volume=index), now=1.0 + index * 0.02)
+        assert ids(events) == [InputId.VOLUME_UP], index
+    # A duplicate toggle press within the window is collapsed.
+    assert ids(det.feed(snap(volume=5, vss=True), now=2.0)) == [
+        InputId.VSS_BUTTON,
+        InputId.VSS_ON,
+    ]
+    assert det.feed(snap(volume=5, vss=True), now=2.02) == []  # echo of the same state: no change
+    # After the debounce window a genuine direction change fires again.
+    assert ids(det.feed(snap(volume=5, vss=False), now=2.5)) == [
+        InputId.VSS_BUTTON,
+        InputId.VSS_OFF,
+    ]
 
 
 def test_link_events_survive_the_settle_window():

@@ -53,8 +53,58 @@ def main() -> int:
             app.update()
 
     # -- navigation --------------------------------------------------------
-    for view in ("dashboard", "mapping", "diagnostics", "settings", "dashboard"):
+    for view in ("dashboard", "audio", "mapping", "diagnostics", "settings",
+                 "dashboard"):
         step(f"open {view}", lambda v=view: (app._select_view(v), pump())[0])
+
+    # -- audio view ----------------------------------------------------------
+    step("audio view renders engine state", lambda: (app._audio_view.refresh(),
+                                                     pump())[0])
+    step("audio view engine provider returns data", lambda: (
+        None if app._audio is None or app._audio.as_dict() else
+        (_ for _ in ()).throw(AssertionError("empty engine dict"))))
+    step("dashboard audio card renders", lambda: (
+        app._dashboard._render_audio(), pump())[0])
+
+    # -- equalizer -----------------------------------------------------------
+    def eq_drag() -> None:
+        view = app._audio_view
+        assert view._eq_graph is not None, "no EQ graph"
+        view._eq_graph.set_curve([100.0, 1000.0, 10000.0], [0.0, 0.0, 0.0])
+        pump()
+        # A press on a point, a drag, and a release, as a user would.
+        class _Event:
+            def __init__(self, x, y):
+                self.x, self.y = x, y
+        x, y = view._eq_graph._points[1]
+        view._eq_graph._press(_Event(x, y))
+        view._eq_graph._drag(_Event(x, y - 40))
+        view._eq_graph._release(_Event(x, y - 40))
+        assert view._eq_graph.gains[1] > 0, "drag did not raise the band"
+        pump()
+
+    step("equalizer graph drags a band", eq_drag)
+
+    def eq_band_count() -> None:
+        view = app._audio_view
+        view._band_var.set("15 Bands")
+        view._on_band_count()
+        pump()
+        assert len(view._eq_graph.gains) == 15, view._eq_graph.gains
+
+    step("equalizer switches to 15 bands", eq_band_count)
+
+    def eq_reset() -> None:
+        view = app._audio_view
+        view._on_reset_eq()
+        pump()
+        assert all(abs(g) < 0.001 for g in view._eq_graph.gains), \
+            view._eq_graph.gains
+
+    step("equalizer resets to flat", eq_reset)
+
+    step("equalizer outputs are listed", lambda: (
+        app._audio_view.refresh_outputs(), pump())[0])
 
     # -- synthetic device traffic -------------------------------------------
     def push_status(hexstr: str) -> None:

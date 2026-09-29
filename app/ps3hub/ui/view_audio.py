@@ -873,9 +873,11 @@ class AudioView(tk.Frame):
         if error and not imported.eq:
             self._eq_banner.set(f"Could not read that preset: {error}", "error")
             return
-        # Hand the imported curve to the running FxSound instance, then read
-        # back what it actually applied.
-        status = engine.apply_profile_via_fxsound(imported, "")
+        # Hand the imported curve to the running FxSound instance - the
+        # curve only, never a preset selection (selecting the file's named
+        # preset would reload the application's stored copy over the curve
+        # we just pushed). Then read back what actually applied.
+        status = engine.apply_curve_via_fxsound(imported)
         if status.error:
             engine.set_profile(imported)
         self._on_changed()
@@ -887,7 +889,12 @@ class AudioView(tk.Frame):
                 f"Loaded “{imported.preset_name or imported.name}”, but "
                 f"FxSound did not accept it: {status.error}", "warn")
         else:
-            self._load_full_state(status)
+            # Keep the file's name as metadata, but adopt the *applied*
+            # curve FxSound reports so the view shows reality.
+            self._last_fx_status = status
+            self._mirror_stamp = self._safe_stamp(engine)
+            self._fxsig = self._fx_signature(status)
+            self._refresh_preset_list(status)
             self._eq_banner.set(
                 f"Loaded “{imported.preset_name or imported.name}” into "
                 "FxSound.", "info")

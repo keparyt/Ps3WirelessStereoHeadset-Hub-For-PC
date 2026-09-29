@@ -1045,3 +1045,41 @@ def test_audio_profile_round_trips_through_the_config_store(tmp_path):
     loaded = engine2.profile_for("{test}")
     assert loaded.eq_bands == 10
     assert loaded.eq == [(25.0, 3.0), (40.0, 3.0), (63.0, 3.0)]
+
+
+def test_imported_curve_is_pushed_without_preset_selection(monkeypatch):
+    """Importing a .fac must not ask FxSound to select the file's preset.
+
+    Selecting the named preset reloads the application's *stored* version,
+    stomping the curve that was just pushed (observed live: every band
+    reverted). The name stays profile metadata only.
+    """
+    from unittest.mock import patch
+
+    from ps3hub.audio import fxsound_backend as fb
+
+    calls = []
+    with patch.object(fb.FxSoundBackend, "_send",
+                      lambda self, *a: calls.append(list(a)) or True), \
+         patch.object(fb.FxSoundBackend, "exe_path",
+                      property(lambda self: fb.Path("C:/x/fxsound.exe"))), \
+         patch.object(fb.FxSoundBackend, "read_status",
+                      lambda self, force=False: fb.FxSoundStatus(found=True, running=True)):
+        backend = fb.FxSoundBackend()
+        profile = AudioProfile(eq=[(100.0, 3.0)], eq_bands=10,
+                               preset_name="Extreme Bass")
+        status = backend.__class__.__mro__ and None  # placeholder no-op
+        from ps3hub.audio.engine import AudioEngine
+
+        engine = AudioEngine.__new__(AudioEngine)
+        engine._fxsound = backend
+        engine._fxsound._last_status = fb.FxSoundStatus(
+            found=True, running=True,
+            equalizer={"num_bands": 10,
+                       "bands": [{"frequency": 100.0 * (i + 1), "gain": 0.0}
+                                 for i in range(10)]})
+        result = engine.apply_curve_via_fxsound(profile)
+        assert result.error == ""
+    joined = " ".join(" ".join(c) for c in calls)
+    assert "--set_band_gain=" in joined, "the curve must be pushed"
+    assert "--preset=" not in joined, "import must not select a preset"

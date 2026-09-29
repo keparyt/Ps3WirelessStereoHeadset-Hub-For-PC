@@ -246,6 +246,22 @@ class AudioEngine:
                                   output_name: str) -> FxSoundStatus:
         return self._fxsound.apply_profile(profile, output_name)
 
+    def apply_curve_via_fxsound(self, profile: AudioProfile) -> FxSoundStatus:
+        """Push a curve + effects to FxSound *without* selecting a preset.
+
+        Importing a ``.fac`` hands the Hub a curve. Asking FxSound to then
+        select the preset named inside the file reloads the application's
+        *stored* version of that preset, stomping the curve that was just
+        pushed (observed live: every band reverted to the stored values).
+        The imported preset name is kept as profile metadata only.
+        """
+        profile = profile.clamped()
+        if not self._fxsound.apply_equalizer_once(profile):
+            return FxSoundStatus(found=self._fxsound.is_installed(),
+                                 running=False,
+                                 error="FxSound did not accept the curve")
+        return self._fxsound.read_status(force=True)
+
     def adopt_fxsound_status(self, status: FxSoundStatus | None = None) -> AudioProfile:
         """Merge FxSound's *live* settings into the active profile.
 

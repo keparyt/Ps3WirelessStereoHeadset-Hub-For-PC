@@ -762,9 +762,12 @@ def test_apply_equalizer_once_is_a_single_invocation(monkeypatch):
         balance_db=-2.0,
     )
     assert backend.apply_equalizer_once(profile) is True
-    assert len(calls) == 1, "the whole block must ride on one invocation"
+    # A fresh backend has never seen the application's count, so the
+    # num_bands flag goes out defensively; every flag shares one command line.
+    assert len(calls) == 1
     line = " ".join(calls[0])
     assert line.startswith("--num_bands=10")
+    assert "--set_band_freq=" in line and "0:100" in line and "1:1000" in line
     assert "--set_band_freq=" in line and "0:100" in line and "1:1000" in line
     assert "--set_band_gain=" in line and "0:3" in line and "1:-4" in line
     assert "--master_gain=+2" in line or "--master_gain=2.0" in line
@@ -844,6 +847,45 @@ def test_stop_live_push_halts_the_worker():
     backend.request_live_push(AudioProfile())
     backend.stop_live_push()
     assert backend._live_stop.is_set()
+
+
+def test_band_count_change_rides_the_invocation_when_needed(monkeypatch):
+    """The count flag is decided against the app's count, not the profile."""
+    from ps3hub.audio import fxsound_backend as fb
+
+    calls = []
+    monkeypatch.setattr(fb.FxSoundBackend, "_send",
+                        lambda self, *a: calls.append(list(a)) or True)
+    monkeypatch.setattr(fb.FxSoundBackend, "exe_path",
+                        property(lambda self: fb.Path("C:/x/fxsound.exe")),
+                        raising=False)
+    backend = fb.FxSoundBackend()
+    # Simulate a backend that last saw the application at 15 bands.
+    backend._last_status = fb.FxSoundStatus(
+        found=True, running=True,
+        equalizer={"num_bands": 15,
+                   "bands": [{"frequency": f, "gain": 0.0} for f in
+                             [25, 40, 63, 100, 160, 250, 400, 630, 1000, 1600,
+                              2500, 4000, 6300, 10000, 16000]]})
+    profile = AudioProfile(eq=[(f, 0.0) for f in
+                               [25, 40, 63, 100, 160, 250, 400, 630, 1000, 1600]],
+                          eq_bands=10)
+    assert backend.apply_equalizer_once(profile) is True
+    assert len(calls) == 1
+    line = " ".join(calls[0])
+    assert line.startswith("--num_bands=10"), "a real count change must send the flag"
+    assert "--set_band_gain=" in line
+
+    # When the application already matches, the flag is omitted entirely.
+    calls.clear()
+    backend._last_status = fb.FxSoundStatus(
+        found=True, running=True,
+        equalizer={"num_bands": 10,
+                   "bands": [{"frequency": f, "gain": 0.0} for f in
+                             [25, 40, 63, 100, 160, 250, 400, 630, 1000, 1600]]})
+    assert backend.apply_equalizer_once(profile) is True
+    assert len(calls) == 1
+    assert "--num_bands" not in " ".join(calls[0])
 
 
 def test_effect_values_clamped_onto_the_live_push():

@@ -267,12 +267,10 @@ class _ToastCard:
 
     def tick(self, now: float) -> None:
         """Advance the countdown; close the card when it has expired."""
-        if self._hover:
-            self._shown_at = now - self._elapsed
-            return
-        self._elapsed = now - self._shown_at
-        if self._elapsed * 1000 >= TOAST_LIFETIME_MS:
-            self.close()
+        if not self._hover:
+            self._elapsed = now - self._shown_at
+            if self._elapsed * 1000 >= TOAST_LIFETIME_MS:
+                self.close()
 
     def close(self, instant: bool = False) -> None:
         if not self._alive:
@@ -312,10 +310,14 @@ class _ToastCard:
     # ------------------------------------------------------------ handlers --
 
     def _enter(self, _e=None) -> None:
+        """Hover: freeze the countdown at its current progress."""
         self._hover = True
+        self._elapsed = time.monotonic() - self._shown_at
 
     def _leave(self, _e=None) -> None:
+        """Unhover: resume the countdown from where it was frozen."""
         self._hover = False
+        self._shown_at = time.monotonic() - self._elapsed
 
     def _clicked(self, _e=None) -> None:
         callback = self._on_click
@@ -523,7 +525,9 @@ class ToastCenter:
     The rule is visibility: when the main window is shown normally, the
     in-app overlay delivers the news right where the user is looking; when
     it is withdrawn (tray) or minimised, the news would land on a hidden
-    overlay, so it goes to Windows instead.
+    overlay, so it goes to Windows instead. During a show/hide transition
+    the window manager may briefly report the old state; a toast that races
+    it is delivered through Windows, which notifies rather than loses it.
 
     All methods are safe to call from any thread. Delivery happens on the
     Tk thread through an internal queue, drained by one repeating ``after``

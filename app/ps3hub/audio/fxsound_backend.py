@@ -619,8 +619,25 @@ class FxSoundBackend:
             # Plain decimal, no exponent: the CLI parses "1000", not "1e+03".
             return f"{_clamp(value, 20.0, 20000.0):.3f}".rstrip("0").rstrip(".") or "0"
 
+        # A band-count change has to be detected against the *application's*
+        # current count, not the profile's list length: a profile's ``eq``
+        # list always matches its ``eq_bands`` after clamping, so comparing
+        # the two is always false and the flag would never go out (verified
+        # live - band-count changes silently no-oped for exactly that
+        # reason). When the last status read gives no count, the flag is
+        # sent defensively; FxSound re-derives centre frequencies on a
+        # count change, and the full frequency list rides the same
+        # invocation, so the combined line stays consistent (combined
+        # delivery verified live against 1.2.13.0, grow and shrink).
+        last_status = self._last_status
+        app_count = None
+        if last_status is not None:
+            try:
+                app_count = int((last_status.equalizer or {}).get("num_bands") or 0) or None
+            except (TypeError, ValueError):
+                app_count = None
         arguments: list[str] = []
-        if len(bands) != count:
+        if app_count is None or app_count != count:
             arguments.append(f"--num_bands={count}")
         freqs = {index: freq
                  for index, (freq, _g) in enumerate(bands[:count])}

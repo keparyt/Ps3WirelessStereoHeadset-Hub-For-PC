@@ -391,9 +391,9 @@ def default_icon_path() -> Path | None:
 def format_tray_status(state: Any) -> str:
     """Create a compact tooltip from the authoritative service snapshot.
 
-    Volume comes from the logical headset state when the caller supplies one
-    (the ``headset_state`` attribute); otherwise it falls back to the raw
-    snapshot so the platform-neutral tests keep working unchanged.
+    Volume and link state come from the logical headset state (the
+    ``headset_state`` attribute); battery and charging come from the raw
+    snapshot. A missing source simply omits its segment.
     """
     if not getattr(state, "backend_available", True):
         return "PS3 Headset Hub • HID backend unavailable"

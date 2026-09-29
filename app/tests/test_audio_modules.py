@@ -944,3 +944,104 @@ def test_view_poll_ignores_push_echoes_and_flat_snapshots():
         # 3. A genuinely different external state is adopted normally.
         view._poll_status_file()
         assert engine.adopted == [external]
+
+
+# --------------------------------------------- deep verification regression ---
+
+
+def test_tray_tooltip_covers_every_state_branch():
+    from types import SimpleNamespace
+    from ps3hub.tray import format_tray_status
+
+    def st(**kw):
+        base = dict(backend_available=True, receiver_present=True,
+                    snapshot=SimpleNamespace(headset_connected=False,
+                                             battery_percent=None, charging=False,
+                                             volume_level=None),
+                    headset_state=None)
+        base.update(kw)
+        return SimpleNamespace(**base)
+
+    assert "HID backend unavailable" in format_tray_status(st(backend_available=False))
+    assert "No supported headset receiver" in format_tray_status(st(receiver_present=False))
+    assert "Waiting" in format_tray_status(st(snapshot=None))
+    snap = SimpleNamespace(headset_connected=False, battery_percent=None,
+                           charging=True, volume_level=None)
+    assert "Charging" in format_tray_status(st(snapshot=snap))
+    tip = format_tray_status(st(
+        snapshot=SimpleNamespace(headset_connected=True, battery_percent=73,
+                                 charging=False, volume_level=None),
+        headset_state=SimpleNamespace(volume_percent=60, linked=True)))
+    assert "Headset connected" in tip and "Volume 60%" in tip and "Battery 73%" in tip
+    assert len(tip) <= 127
+
+
+def test_toast_click_runs_callback_and_fade_removes_the_card():
+    import time as _time
+    from ps3hub.ui.toast import ToastCenter
+
+    root = _shared_root()
+    center = ToastCenter(root, "Hub")
+    try:
+        root.deiconify(); root.update()
+        clicked = []
+        center.show("Click me", "body", "ok", on_click=lambda: clicked.append(1))
+        deadline = _time.monotonic() + 2
+        while _time.monotonic() < deadline and center.in_app_shown == 0:
+            root.update(); _time.sleep(0.02)
+        assert center.in_app_shown == 1
+        card = center._overlay._toasts[0]
+        card._clicked()
+        # Closing fades the card out over a few animation ticks; wait for
+        # the removal rather than racing it.
+        deadline = _time.monotonic() + 2
+        while _time.monotonic() < deadline and center._overlay._toasts:
+            root.update(); _time.sleep(0.02)
+        assert clicked == [1] and not center._overlay._toasts
+    finally:
+        center.shutdown()
+        root.withdraw()
+
+
+def test_toast_show_is_safe_from_a_worker_thread():
+    import threading
+    import time as _time
+    from ps3hub.ui.toast import ToastCenter
+
+    root = _shared_root()
+    center = ToastCenter(root, "Hub")
+    try:
+        root.deiconify(); root.update()
+        worker = threading.Thread(
+            target=lambda: center.show("From thread", "cross-thread", "info", None))
+        worker.start(); worker.join()
+        deadline = _time.monotonic() + 2
+        while _time.monotonic() < deadline and center.in_app_shown == 0:
+            root.update(); _time.sleep(0.02)
+        assert center.in_app_shown == 1
+    finally:
+        center.shutdown()
+        root.withdraw()
+
+
+def test_audio_profile_round_trips_through_the_config_store(tmp_path):
+    from dataclasses import replace
+
+    from ps3hub.audio.engine import AudioEngine
+    from ps3hub.config import ConfigStore
+
+    engine = AudioEngine()
+    store = ConfigStore(tmp_path / "config.json")
+    config = store.load()
+    # Build a profile for a synthetic endpoint; no devices needed for storage.
+    profile = replace(AudioProfile(), device_id="{test}",
+                      eq=[(f, 3.0) for f in (25, 40, 63)], eq_bands=10)
+    engine.set_profile(profile)
+    config.audio = engine.export_state()
+    assert store.save(config)
+
+    engine2 = AudioEngine()
+    engine2.import_state(store.load().audio)
+    loaded = engine2.profile_for("{test}")
+    assert loaded.eq_bands == 10
+    assert loaded.eq == [(25.0, 3.0), (40.0, 3.0), (63.0, 3.0)]

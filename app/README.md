@@ -337,6 +337,13 @@ python -m pytest                          # unit tests
 python tests\smoke_ui.py                  # builds and drives the whole UI
 ```
 
+### Versioning
+
+The version lives in one place: `APP_VERSION` in `ps3hub/__init__.py` (the
+rail footer, Settings and Diagnostics all render it). Every push to `main` is
+a release: bump the patch number first — `1.2.01`, `1.2.02`, and so on —
+commit as `chore: release 1.2.0X`, and tag `v1.2.0X`.
+
 The smoke test walks every view, both editing paths and synthetic device
 traffic. It catches Tk mistakes that compiling cannot.
 

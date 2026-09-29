@@ -5,9 +5,38 @@ A desktop application for the **Sony PlayStation Gold Wireless Stereo Headset
 
 It shows live headset state, detects every control on the headset, and lets you
 bind those controls to media keys, system volume, keyboard shortcuts, or any
-program you like.
+program you like. It also processes or shapes the PC's audio: its own loopback
+DSP, or a driven [FxSound](https://www.fxsound.com/) installation with a live
+equalizer.
 
 ![Dashboard](docs/dashboard.png)
+
+## What is new in 1.2
+
+* **Black-and-gold interface.** Near-black slate surfaces, one gold accent
+  reserved for active states - the selected nav entry, toggles, accent
+  buttons, the equalizer curve.
+* **Unified toasts.** Connect, battery, charging and shortcut news appears as
+  a small card stacked at the bottom-right of the *screen* while the window is
+  visible, and as a Windows toast when it is hidden in the tray or minimised.
+  A Settings switch (**Always use Windows notifications**) forces the Windows
+  route even when the window is visible. Hovering a card pauses its
+  countdown; clicking it opens the Hub.
+* **Battery tray icon.** The tray shows a headset drawn in code, coloured by
+  state: green when healthy, yellow below 30%, red below 15%, gold while
+  charging, gray when the headset is away but the Hub keeps running.
+* **FxSound integration, done honestly.** The Audio page's FxSound features
+  are gated: if the application is installed but not running, the Hub offers
+  to start it (hidden, never stealing focus); if it is missing, the Hub links
+  the official download page. On open - and after starting - the Hub loads
+  *all* of FxSound's presets and mirrors its live equalizer, effect levels
+  and selected preset into the active profile, and keeps following the
+  application while the page is open.
+* **A live equalizer.** Dragging a point or moving any slider (master gain,
+  volume leveling, filter Q, balance, the five effects) is heard in real
+  time: changes are coalesced into at most one FxSound CLI invocation per
+  120 ms on a background thread, and a focus guard restores the foreground
+  window afterwards. With the Hub's own DSP, the same curve applies instantly.
 
 ---
 
@@ -108,8 +137,9 @@ counters, every HID collection with its open state and report count, any report
 shape the decoder does not recognise (with raw bytes), and the live log with a
 one-click copy for bug reports.
 
-**Settings** holds the detection tuning above, plus an "open every HID
-collection" switch for the case below.
+**Settings** holds the detection tuning above, the toast switches (connect,
+volume, audio processing, low battery, shortcut executed, always-Windows
+delivery), and an "open every HID collection" switch for the case below.
 
 ### If no inputs are detected
 
@@ -151,9 +181,11 @@ transparent (−0.00 dB).
 
 If [FxSound](https://www.fxsound.com/) is installed, the Hub can instead drive
 that application through its documented command-line interface (`--power`,
-`--preset`, `--set_effect`, `--master_gain`, `--status`). FxSound is not
-bundled, not linked and not copied; the integration only sends CLI commands to
-an installation the user already has, and the Hub works fully without it.
+`--preset`, `--set_effect`, `--master_gain`, `--status`, `--num_bands`,
+`--set_band_gain`, `--set_band_freq`, `--filter_q`, `--volume_leveling`,
+`--balance`, `--save_preset`, `--output`). FxSound is not bundled, not linked
+and not copied; the integration only sends CLI commands to an installation the
+user already has, and the Hub works fully without it.
 
 The FxSound features on the Audio page are gated on the application actually
 running. When FxSound is installed but stopped, using one of those features
@@ -188,11 +220,14 @@ Whichever processor is active applies the curve. With FxSound as the backend
 the Hub sends the band gains through the documented CLI
 (`--set_band_gain`, `--set_band_freq`, `--num_bands`, `--filter_q`,
 `--volume_leveling`, `--balance`), so the EQ runs on FxSound's own drivers and
-DSP rather than a reimplementation of it. Dragging a point is heard live:
-the curve is pushed to FxSound as it moves, coalesced into at most one CLI
-invocation per 120 ms on a background thread, and a focus guard restores the
-foreground window afterwards so FxSound never raises itself over the user's
-work. With the Hub's own loopback engine
+DSP rather than a reimplementation of it. Every control is heard live: the
+curve, the four sliders and the five effect levels are pushed to FxSound as
+they move, coalesced into at most one CLI invocation per 120 ms on a
+background thread (band-count changes ride the same line, and the Hub tracks
+the application's own band count so a change is never missed). A focus guard
+restores the foreground window after every spawn, so FxSound never raises
+itself over the user's work - and the Hub starts it hidden. With the Hub's own
+loopback engine
 the same curve is applied as one peaking biquad per non-flat band, which the
 test suite measures: a +6 dB band comes out **+6.00 dB** at its own centre
 frequency, and **0.07 dB** away from it.
@@ -249,6 +284,7 @@ actions.py        actions and Windows SendInput injection
 mappings.py       input -> action binding model
 config.py         atomic persistence (schema v2: bindings + audio profiles)
 device.py         enumeration, hotplug, dispatch, event publication
+notify.py         Win32 balloon sender (persistent host icon, no flicker)
 audio/            loopback DSP, device monitor, profiles, FxSound CLI
   dsp.py          biquads; spectrum_peak_db is the measurement hook
   loopback_dsp.py WASAPI loopback capture -> biquads -> render
@@ -257,7 +293,10 @@ audio/            loopback DSP, device monitor, profiles, FxSound CLI
   fxsound_backend.py  drives an installed FxSound over its documented CLI
   fac.py          read/write FxSound .fac preset files
   engine.py       the facade the UI talks to
+tray.py           Shell_NotifyIconW tray icon, redrawn per headset state
 ui/               presentation only
+  theme.py        the black-gold palette and ttk styling
+  toast.py        ToastCenter: in-app corner cards / Windows toasts routing
   widget_eq.py    the draggable equalizer graph
 ```
 

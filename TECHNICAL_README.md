@@ -4,6 +4,8 @@ This document describes the architecture, reverse-engineering work, HID protocol
 
 It is intended for developers, reverse engineers, contributors, and AI coding agents who need to understand the project before modifying it.
 
+> **Current release: v1.2.** The application in `app/` implements the mapped bindings, persistent configuration, tray integration with a battery-coloured headset icon, a two-route notification system, audio processing (loopback DSP or driven FxSound with a live equalizer) and a black-and-gold interface. See `app/README.md` for application-level documentation; this document stays at the protocol and architecture level.
+
 > **Important:** This document distinguishes observed behavior from interpretations. Reverse-engineered fields marked unknown or provisional should not be treated as confirmed protocol specifications.
 
 ---
@@ -552,7 +554,12 @@ This provides three major benefits:
 
 # 18. Application architecture
 
-The intended application architecture is layered.
+The application (v1.2) is layered exactly as intended below; the concrete
+module map lives in `app/README.md`. On top of the layers shown here sit the
+notification stack (`notify.py`, `notify_service.py` — bus to policy to
+toasts, delivered as in-app corner cards or Windows toasts depending on window
+visibility) and the audio subsystem (`ps3hub/audio/` — a WASAPI loopback DSP
+plus an FxSound CLI backend with a coalesced live-equalizer push worker).
 
 ```
 ┌─────────────────────────────────┐
@@ -758,6 +765,12 @@ Tests should cover:
 - chat balance
 - VSS flag
 - microphone mute flag
+
+The v1.2 test suite (233 tests) extends this with DSP measurements that assert
+boosted bands are measurably louder at their own frequency and not elsewhere,
+byte-identical `.fac` preset round trips, FxSound CLI invocation shapes,
+notification policy and toast routing, tray-icon state mapping and pixel
+output, and config schema migration.
 - headset link flag
 - unknown bits
 - edge values

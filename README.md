@@ -382,7 +382,15 @@ The exact collections and usage pages should not be assumed to be identical acro
 ```
 .
 ├── app/
-│   └── Windows application
+│   ├── main.py               entry point (window or tray mode)
+│   ├── run.bat               install + run
+│   ├── ps3hub/               the application package (see app/README.md)
+│   │   ├── protocol.py       HID byte decoding
+│   │   ├── device.py         service: enumeration, hotplug, dispatch
+│   │   ├── tray.py           battery-coloured headset tray icon
+│   │   ├── audio/            loopback DSP + FxSound CLI integration
+│   │   └── ui/               black-gold interface, toasts, equalizer
+│   └── tests/                233 unit tests + a full UI smoke test
 │
 ├── poc/
 │   ├── ps3_headset_panel.py
@@ -402,6 +410,38 @@ The exact collections and usage pages should not be assumed to be identical acro
 
 ---
 
+# The application (v1.2)
+
+The `app/` directory contains the Windows companion application this project
+has been building toward. Highlights of the current release:
+
+- **Live headset dashboard** - battery, volume, chat mix, VSS and microphone,
+  with every detected control shown as it fires.
+- **Full input mapping** - bind any headset control to media keys, volume,
+  keyboard shortcuts (with a recorder) or program launchers. Bindings save
+  automatically and export/import as JSON.
+- **A black-and-gold interface** - near-black slate surfaces with a single
+  gold accent reserved for active states.
+- **Smart notifications** - connect/disconnect, battery, charging and shortcut
+  news as corner cards while the window is visible, Windows toasts when it is
+  hidden; per-category switches in Settings.
+- **Battery tray icon** - a code-drawn headset, green/yellow/red by battery,
+  gold while charging, gray when the headset is away.
+- **Audio processing** - the Hub's own WASAPI loopback DSP (bass, clarity,
+  ambience, surround, dynamic boost) plus a full draggable equalizer.
+- **FxSound integration** - when [FxSound](https://www.fxsound.com/) is
+  installed, the Hub drives it over its documented CLI: live equalizer,
+  effects and presets, .fac import/export, gated start/install handling, and
+  a focus guard so it never steals focus.
+
+See **[app/README.md](app/README.md)** for the full application documentation,
+including the mapping constraints that come from the hardware, the equalizer's
+verification methodology and the architecture tour.
+
+---
+
+---
+
 # Roadmap
 
 The roadmap is intentionally open-ended.
@@ -414,14 +454,17 @@ The roadmap is intentionally open-ended.
 - [x] Decode known telemetry
 - [x] Build diagnostic tooling
 
-### Application
+### Application (v1.2)
 
 - [x] Initial Windows GUI
 - [X] Refine application UI
-- [ ] Add persistent device state
-- [ ] Tray integration
-- [ ] Notifications
-- [ ] Settings
+- [x] Add persistent device state
+- [X] Tray integration (battery-coloured headset icon, drawn in code)
+- [X] Notifications (in-app corner cards + Windows toasts, per-category switches)
+- [X] Settings
+- [X] Keyboard shortcuts, app launchers, media keys, volume actions
+- [X] Audio processing: the Hub's own loopback DSP
+- [X] FxSound integration: live equalizer, effects, presets, .fac import/export
 
 ### Headset controls
 
@@ -435,8 +478,8 @@ The roadmap is intentionally open-ended.
 
 - [X] Music/media controls
 - [ ] Windows media integration
-- [ ] Configurable shortcuts
-- [ ] Desktop integration
+- [X] Configurable shortcuts
+- [X] Desktop integration (tray, toasts, auto-output switching)
 - [ ] Additional PC-specific functionality
 
 ### Reverse engineering

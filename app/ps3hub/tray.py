@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
+import queue
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +25,119 @@ OPEN_COMMAND = 1001
 HIDE_COMMAND = 1002
 REFRESH_COMMAND = 1003
 EXIT_COMMAND = 1004
+
+# ------------------------------------------------------------ tray icon art --
+
+#: Battery thresholds for the icon colour, in percent. Green when healthy,
+#: yellow when getting low, red when critical; gray when the headset is
+#: not connected or its battery is unknown.
+BATTERY_OK_BELOW = 30
+BATTERY_LOW_BELOW = 15
+ICON_COLOUR_OK = (0x5B, 0xD1, 0x96)      # green
+ICON_COLOUR_LOW = (0xEF, 0xB3, 0x4A)     # yellow
+ICON_COLOUR_CRITICAL = (0xEF, 0x6B, 0x6E)  # red
+ICON_COLOUR_OFF = (0x9A, 0xA3, 0xAE)     # gray: running but not connected
+ICON_COLOUR_CHARGING = (0xCF, 0xAE, 0x3D)  # gold, the app's active-state accent
+ICON_BACKGROUND = (0x0A, 0x0B, 0x0D)     # the theme's deepest slate
+
+
+def tray_icon_kind(connected: bool, battery_percent: int | None,
+                   charging: bool = False) -> str:
+    """Map headset state onto an icon kind. Pure; unit-testable."""
+    if not connected:
+        return "off"
+    if charging:
+        return "charging"
+    if battery_percent is None:
+        return "off"
+    if battery_percent < BATTERY_LOW_BELOW:
+        return "critical"
+    if battery_percent < BATTERY_OK_BELOW:
+        return "low"
+    return "ok"
+
+
+def _ICON_COLOURS() -> dict[str, tuple[int, int, int]]:
+    return {
+        "ok": ICON_COLOUR_OK,
+        "low": ICON_COLOUR_LOW,
+        "critical": ICON_COLOUR_CRITICAL,
+        "off": ICON_COLOUR_OFF,
+        "charging": ICON_COLOUR_CHARGING,
+    }
+
+
+def headset_icon_pixels(kind: str, size: int = 32) -> list[list[int]]:
+    """Draw the headset as an RGBA byte grid, fully in code.
+
+    The headset is drawn from simple geometry - headband arc, two oval ear
+    cups, stems down from the cups - in the accent colour for ``kind`` on a
+    transparent field. Pure function of its arguments, so the shapes and the
+    threshold mapping can be unit-tested without a display, and each state
+    change needs no asset file on disk.
+
+    Returns ``rows[y][x]`` of 0 (transparent) or 0xFF (opaque).
+    """
+    colours = _ICON_COLOURS()
+    accent = colours.get(kind, ICON_COLOUR_OFF)
+    c = size / 2.0
+    cup_w = size * 0.24          # ear cup half-width
+    cup_h = size * 0.30          # ear cup half-height
+    band_r = size * 0.34         # headband radius
+    band_w = size * 0.085        # headband thickness
+    stem_len = size * 0.14
+
+    rows: list[list[int]] = [[0] * size for _ in range(size)]
+    for y in range(size):
+        py = y + 0.5
+        for x in range(size):
+            px = x + 0.5
+            opaque = False
+            dx, dy = px - c, py - c
+            # Headband: an annulus sector across the top (|x| wide enough,
+            # above centre, within [r - w, r]).
+            r = (dx * dx + dy * dy) ** 0.5
+            if abs(dx) <= band_r and dy < 0 and band_r - band_w <= r <= band_r:
+                opaque = True
+            # Ear cups: two ovals at the band's ends.
+            cup_cy = c + size * 0.10
+            for cup_cx in (c - band_r, c + band_r):
+                ex = (px - cup_cx) / cup_w
+                ey = (py - cup_cy) / cup_h
+                if ex * ex + ey * ey <= 1.0:
+                    opaque = True
+            # Stems: short bars below each cup, like the headset's yokes.
+            for stem_cx in (c - band_r, c + band_r):
+                if abs(px - stem_cx) <= cup_w * 0.55 and \
+                        cup_cy + cup_h <= py <= cup_cy + cup_h + stem_len:
+                    opaque = True
+            rows[y][x] = 0xFF if opaque else 0x00
+    return rows
+
+
+def _rgba_bytes_for_kind(kind: str, size: int = 32) -> bytes:
+    """Render one icon kind as 32-bit BGRA rows, top-down.
+
+    Fed to a negative-height (top-down) BITMAPINFOHEADER, so the first row
+    in memory is the top row of the drawing.
+    """
+    accent = _ICON_COLOURS().get(kind, ICON_COLOUR_OFF)
+    bg = ICON_BACKGROUND
+    rows = headset_icon_pixels(kind, size)
+    stride = size * 4
+    out = bytearray(size * stride)
+    for y in range(size):
+        src = rows[y]
+        base = y * stride
+        for x in range(size):
+            alpha = src[x]
+            i = base + x * 4
+            if alpha:
+                b, g, r = accent
+                out[i:i + 4] = bytes((b, g, r, alpha))
+            else:
+                out[i:i + 4] = bytes((bg[0], bg[1], bg[2], 0))
+    return bytes(out)
 
 if IS_WINDOWS:
     import ctypes
@@ -73,7 +187,75 @@ if IS_WINDOWS:
     _LR_DEFAULTSIZE = 0x00000040
     _IDI_APPLICATION = 32512
 
+    _BI_RGB = 0
+    _DIB_RGB_COLORS = 0
+    _CBM_INIT = 0x04
+
     _HWND_MESSAGE = _HWND(-3)
+
+    class BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = [
+            ("biSize", wintypes.DWORD),
+            ("biWidth", wintypes.LONG),
+            ("biHeight", wintypes.LONG),
+            ("biPlanes", wintypes.WORD),
+            ("biBitCount", wintypes.WORD),
+            ("biCompression", wintypes.DWORD),
+            ("biSizeImage", wintypes.DWORD),
+            ("biXPelsPerMeter", wintypes.LONG),
+            ("biYPelsPerMeter", wintypes.LONG),
+            ("biClrUsed", wintypes.DWORD),
+            ("biClrImportant", wintypes.DWORD),
+        ]
+
+    class BITMAPINFO(ctypes.Structure):
+        _fields_ = [
+            ("bmiHeader", BITMAPINFOHEADER),
+            ("bmiColors", wintypes.DWORD * 1),
+        ]
+
+    _gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+    _gdi32.CreateDIBSection.argtypes = [
+        _HANDLE, ctypes.POINTER(BITMAPINFO), wintypes.UINT,
+        ctypes.POINTER(ctypes.c_void_p), _HANDLE, wintypes.DWORD,
+    ]
+    _gdi32.CreateDIBSection.restype = _HANDLE
+    _gdi32.DeleteObject.argtypes = [_HANDLE]
+    _gdi32.DeleteObject.restype = wintypes.BOOL
+    _gdi32.CreateDIBitmap.argtypes = [
+        _HANDLE, ctypes.POINTER(BITMAPINFOHEADER), wintypes.DWORD,
+        wintypes.LPVOID, ctypes.POINTER(BITMAPINFO), wintypes.UINT,
+    ]
+    _gdi32.CreateDIBitmap.restype = _HANDLE
+    _gdi32.SetDIBits.argtypes = [
+        _HANDLE, _HANDLE, wintypes.UINT, wintypes.UINT, wintypes.LPVOID,
+        ctypes.POINTER(BITMAPINFO), wintypes.UINT,
+    ]
+    _gdi32.SetDIBits.restype = ctypes.c_int
+    _gdi32.CreateBitmap.argtypes = [
+        ctypes.c_int, ctypes.c_int, wintypes.UINT, wintypes.UINT, wintypes.LPVOID,
+    ]
+    _gdi32.CreateBitmap.restype = _HANDLE
+
+    _HBITMAP = getattr(wintypes, "HBITMAP", _HANDLE)
+
+    class ICONINFO(ctypes.Structure):
+        _fields_ = [
+            ("fIcon", wintypes.BOOL),
+            ("xHotspot", wintypes.DWORD),
+            ("yHotspot", wintypes.DWORD),
+            ("hbmMask", _HBITMAP),
+            ("hbmColor", _HBITMAP),
+        ]
+
+    _user32.GetDC.argtypes = [_HWND]
+    _user32.GetDC.restype = _HANDLE
+    _user32.ReleaseDC.argtypes = [_HWND, _HANDLE]
+    _user32.ReleaseDC.restype = ctypes.c_int
+    _user32.CreateIconIndirect.argtypes = [ctypes.POINTER(ICONINFO)]
+    _user32.CreateIconIndirect.restype = _HICON
+    _user32.DestroyIcon.argtypes = [_HICON]
+    _user32.DestroyIcon.restype = wintypes.BOOL
 
     class NOTIFYICONDATAW(ctypes.Structure):
         _fields_ = [
@@ -258,6 +440,7 @@ class TrayManager:
         on_exit: Callable[[], None],
         icon_path: Path | None = None,
         app_name: str = "PS3 Wireless Stereo Headset Hub",
+        icon_kind_provider: Callable[[], str] | None = None,
     ) -> None:
         self._status_provider = status_provider
         self._on_open = on_open
@@ -266,6 +449,12 @@ class TrayManager:
         self._on_exit = on_exit
         self._icon_path = icon_path or default_icon_path()
         self._app_name = app_name
+        #: Returns one of the :func:`tray_icon_kind` strings; when given,
+        #: the tray icon is re-rendered whenever the kind changes instead
+        #: of showing a static file.
+        self._icon_kind_provider = icon_kind_provider
+        self._icon_kind: str | None = None
+        self._kind_requests: "queue.SimpleQueue[str]" = queue.SimpleQueue()
 
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -371,14 +560,23 @@ class TrayManager:
             self._started = True
             self._thread_ready.set()
 
-            next_tooltip = 0.0
+            next_refresh = 0.0
             while not self._stop.is_set():
                 self._pump_messages()
 
                 now = time.monotonic()
-                if now >= next_tooltip:
+                if now >= next_refresh:
                     self._update_tooltip()
-                    next_tooltip = now + 1.0
+                    self._poll_icon_kind()
+                    next_refresh = now + 1.0
+
+                # State changes pushed from the UI thread take effect at once.
+                try:
+                    while True:
+                        kind = self._kind_requests.get_nowait()
+                        self._apply_icon_kind(kind)
+                except queue.Empty:
+                    pass
 
                 time.sleep(0.10)
 
@@ -397,6 +595,94 @@ class TrayManager:
             self._hwnd = None
             self._thread_id = None
             self._started = False
+
+    # ---------------------------------------------------------- dynamic icon --
+
+    def update_icon_kind(self, kind: str) -> None:
+        """Request an icon re-render for a new headset state. Any thread."""
+        if kind != self._icon_kind:
+            self._kind_requests.put(str(kind))
+
+    def _poll_icon_kind(self) -> None:
+        """Ask the provider for the current state (tray thread, 1s cadence)."""
+        provider = self._icon_kind_provider
+        if provider is None:
+            return
+        try:
+            kind = str(provider() or "off")
+        except Exception:
+            log.debug("Icon kind provider failed", exc_info=True)
+            return
+        if kind != self._icon_kind:
+            self._apply_icon_kind(kind)
+
+    def _apply_icon_kind(self, kind: str) -> None:
+        """Re-render and swap the tray icon (tray thread only)."""
+        self._icon_kind = kind
+        if self._hwnd is None:
+            return
+        handle = self._create_state_icon(kind)
+        if not handle:
+            log.debug("Could not render the %s tray icon", kind)
+            return
+        data = self._make_data()
+        data.uFlags = _NIF_ICON | _NIF_TIP
+        data.hIcon = _HICON(handle)
+        data.szTip = self._clip_tip(self._status_provider())
+        if bool(_shell32.Shell_NotifyIconW(_NIM_MODIFY, ctypes.byref(data))):
+            old = self._icon_handle
+            self._icon_handle = handle
+            if old and old != handle:
+                _user32.DestroyIcon(_HICON(old))
+            log.debug("Tray icon updated to %s", kind)
+
+    def _create_state_icon(self, kind: str) -> int:
+        """Render one headset-state icon as an alpha HICON.
+
+        A 32-bpp DIB section carries the colour data with per-pixel alpha;
+        a monochrome mask of the right size pairs with it in ICONINFO. All
+        GDI objects are released; only the HICON outlives the call.
+        """
+        size = 32
+        pixels = _rgba_bytes_for_kind(kind, size)
+        hdc = _user32.GetDC(None)
+        if not hdc:
+            return 0
+        try:
+            bmi = BITMAPINFO()
+            header = bmi.bmiHeader
+            header.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+            header.biWidth = size
+            header.biHeight = -size  # negative: top-down rows
+            header.biPlanes = 1
+            header.biBitCount = 32
+            header.biCompression = _BI_RGB
+            section = ctypes.c_void_p()
+            bitmap = _gdi32.CreateDIBSection(
+                hdc, ctypes.byref(bmi), _DIB_RGB_COLORS,
+                ctypes.byref(section), None, 0)
+            if not bitmap or not section:
+                return 0
+            try:
+                ctypes.memmove(section, pixels, len(pixels))
+                mask = _gdi32.CreateBitmap(size, size, 1, 1, None)
+                if not mask:
+                    return 0
+                try:
+                    icon_info = ICONINFO()
+                    icon_info.fIcon = True
+                    icon_info.xHotspot = 0
+                    icon_info.yHotspot = 0
+                    icon_info.hbmMask = _HBITMAP(mask)
+                    icon_info.hbmColor = _HBITMAP(bitmap)
+                    handle = _user32.CreateIconIndirect(ctypes.byref(icon_info))
+                    return int(getattr(handle, "value", handle) or 0)
+                finally:
+                    _gdi32.DeleteObject(_HBITMAP(mask))
+            finally:
+                _gdi32.DeleteObject(_HBITMAP(bitmap))
+        finally:
+            _user32.ReleaseDC(None, hdc)
 
     def _load_icon(self) -> int:
         icon = None

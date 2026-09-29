@@ -63,6 +63,9 @@ class Settings:
     notify_connection: bool = True
     notify_volume: bool = True
     notify_audio: bool = True
+    #: Deliver every toast through Windows even while the window is visible,
+    #: instead of using the in-app corner overlay.
+    force_windows_toasts: bool = False
 
     def clamped(self) -> "Settings":
         """Keep hand-edited values inside ranges the app can actually honour."""
@@ -85,6 +88,7 @@ class Settings:
             notify_connection=bool(self.notify_connection),
             notify_volume=bool(self.notify_volume),
             notify_audio=bool(self.notify_audio),
+            force_windows_toasts=bool(self.force_windows_toasts),
         )
 
     def to_dict(self) -> dict[str, Any]:

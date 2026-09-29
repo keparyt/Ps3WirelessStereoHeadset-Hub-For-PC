@@ -19,7 +19,7 @@ from tkinter import ttk
 from typing import Callable
 
 from .theme import (
-    ABYSS, DECK, FAINT, FAULT, ICE, ICE_DEEP, ICE_WASH, IDLE, LIVE, MUTED,
+    ABYSS, DECK, FAINT, FAULT, GOLD, GOLD_DEEP, GOLD_WASH, IDLE, LIVE, MUTED,
     PANEL, PANEL_HI, PAPER, RADIUS, RADIUS_SMALL, RIDGE, SELECTION, WARN,
     fonts, round_rect,
 )
@@ -99,9 +99,9 @@ class StatusPill(tk.Canvas):
 
     def _shade(self) -> str:
         return {
-            LIVE: "#12332A", WARN: "#33290F", FAULT: "#361A1D",
-            ICE: ICE_WASH, IDLE: "#132430",
-        }.get(self._color, "#132430")
+            LIVE: GOLD_WASH, WARN: "#33290F", FAULT: "#361A1D",
+            GOLD: GOLD_WASH, IDLE: "#1B2027",
+        }.get(self._color, "#1B2027")
 
 
 class VolumeLadder(tk.Canvas):
@@ -160,14 +160,14 @@ class VolumeLadder(tk.Canvas):
             else:
                 # Visible but clearly empty: the point of the ladder is that
                 # you can see all ten headset volume levels while the receiver status is mapped onto them.
-                fill = "#1A3543"
+                fill = "#1E232B"
             round_rect(self, x1, top, x2, bottom, 3, fill=fill, outline="")
 
     def _segment_color(self, index: int) -> str:
         # The top two steps shift warm: on this headset they are genuinely loud.
         if index >= 8:
             return WARN
-        return ICE
+        return GOLD
 
 
 class BatteryGauge(tk.Canvas):
@@ -200,7 +200,7 @@ class BatteryGauge(tk.Canvas):
                               fill=RIDGE, outline="")
 
         if self._charging:
-            colour = ICE
+            colour = GOLD
             fraction = 1.0
         elif self._percent is None:
             colour = IDLE
@@ -254,7 +254,7 @@ class BalanceBar(tk.Canvas):
         self.create_text(width, 0, text="Chat", anchor="ne", fill=MUTED, font=font.tiny)
 
         top = 18
-        round_rect(self, 0, top, width, top + 8, 4, fill="#122531", outline="")
+        round_rect(self, 0, top, width, top + 8, 4, fill="#1B2027", outline="")
         if self._value is None:
             self.create_text(width / 2, top + 22, text="No reading yet", fill=FAINT,
                              font=font.tiny)
@@ -262,8 +262,8 @@ class BalanceBar(tk.Canvas):
 
         fraction = max(0.0, min(1.0, self._value / 100))
         x = fraction * width
-        round_rect(self, 0, top, max(6, x), top + 8, 4, fill=ICE_DEEP, outline="")
-        self.create_oval(x - 6, top - 2, x + 6, top + 10, fill=ICE, outline=PANEL,
+        round_rect(self, 0, top, max(6, x), top + 8, 4, fill=GOLD_DEEP, outline="")
+        self.create_oval(x - 6, top - 2, x + 6, top + 10, fill=GOLD, outline=PANEL,
                          width=2)
         self.create_text(width / 2, top + 22, text=f"{self._value}% toward chat",
                          fill=MUTED, font=font.tiny)
@@ -310,13 +310,13 @@ class NavButton(tk.Frame):
 
     def _paint(self, bg: str, fg: str) -> None:
         self._inner.configure(bg=bg)
-        self._glyph.configure(bg=bg, fg=ICE if self._selected else fg)
+        self._glyph.configure(bg=bg, fg=GOLD if self._selected else fg)
         self._label.configure(bg=bg, fg=fg)
 
     def set_selected(self, selected: bool) -> None:
         self._selected = selected
         if selected:
-            self._marker.configure(bg=ICE)
+            self._marker.configure(bg=GOLD)
             self._paint(PANEL, PAPER)
             self._label.configure(font=(fonts().body, 10, "bold"))
         else:
@@ -478,7 +478,7 @@ class Banner(tk.Frame):
 
     def __init__(self, master, text: str = "", tone: str = "info") -> None:
         super().__init__(master, bg=PANEL)
-        self._bar = tk.Frame(self, width=3, bg=ICE)
+        self._bar = tk.Frame(self, width=3, bg=MUTED)
         self._bar.pack(side="left", fill="y")
         self._label = tk.Label(
             self, text=text, bg=PANEL, fg=MUTED, font=fonts().small,
@@ -499,7 +499,7 @@ class Banner(tk.Frame):
             self.set_tone(tone)
 
     def set_tone(self, tone: str) -> None:
-        colour = {"info": ICE, "warn": WARN, "error": FAULT, "ok": LIVE}.get(tone, ICE)
+        colour = {"info": MUTED, "warn": WARN, "error": FAULT, "ok": LIVE}.get(tone, MUTED)
         self._bar.configure(bg=colour)
         self._label.configure(fg=PAPER if tone in ("error", "warn") else MUTED)
 

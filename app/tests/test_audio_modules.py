@@ -5,6 +5,10 @@ tests cover everything deterministic.
 """
 
 import json
+import time
+import tkinter as tk
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 
 import numpy as np
 import pytest
@@ -295,3 +299,508 @@ def test_fxsound_set_power_uses_documented_flag(monkeypatch):
     backend.set_power(True)
     backend.set_power(False)
     assert calls == [["--power=1"], ["--power=0"]]
+
+
+def test_fxsound_launch_spawns_the_exe_without_arguments(monkeypatch):
+    from ps3hub.audio import fxsound_backend as fb
+
+    spawned = []
+    monkeypatch.setattr(fb.subprocess, "Popen",
+                        lambda argv, **kwargs: spawned.append(argv) or object())
+    backend = fb.FxSoundBackend()
+    monkeypatch.setattr(fb.FxSoundBackend, "exe_path",
+                        property(lambda self: fb.Path("C:/x/fxsound.exe")),
+                        raising=False)
+    assert backend.launch() is True
+    assert spawned == [[str(fb.Path("C:/x/fxsound.exe"))]]
+
+
+def test_fxsound_launch_without_an_install_is_a_clean_no(monkeypatch):
+    from ps3hub.audio import fxsound_backend as fb
+
+    monkeypatch.setattr(fb.FxSoundBackend, "exe_path",
+                        property(lambda self: None), raising=False)
+    assert fb.FxSoundBackend().launch() is False
+
+
+def test_fxsound_wait_until_running_polls_until_the_status_file_appears(monkeypatch):
+    from ps3hub.audio import fxsound_backend as fb
+
+    backend = fb.FxSoundBackend()
+    states = iter([False, False, True])
+
+    def fake_read_status(self, force=False):
+        return fb.FxSoundStatus(found=True, running=next(states))
+
+    monkeypatch.setattr(fb.FxSoundBackend, "read_status", fake_read_status)
+    monkeypatch.setattr(fb.time, "sleep", lambda _s: None)
+    status = backend.wait_until_running(timeout=5.0)
+    assert status.running is True
+
+
+def test_fxsound_wait_gives_up_after_the_timeout(monkeypatch):
+    from ps3hub.audio import fxsound_backend as fb
+
+    backend = fb.FxSoundBackend()
+    monkeypatch.setattr(fb.FxSoundBackend, "read_status",
+                        lambda self, force=False: fb.FxSoundStatus(found=True))
+    monkeypatch.setattr(fb.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(fb.time, "monotonic",
+                        lambda: [0.0, 1.0, 99.0][min(int(fb.time.monotonic_calls), 2)]
+                        if hasattr(fb.time, "monotonic_calls") else 99.0)
+    status = backend.wait_until_running(timeout=0.0)
+    assert status.running is False
+
+
+def test_download_url_points_at_the_official_site():
+    from ps3hub.audio.fxsound_backend import DOWNLOAD_URL
+    assert DOWNLOAD_URL.startswith("https://www.fxsound.com")
+
+
+# ------------------------------------------------ live settings adoption ---
+
+
+def _status_with(effects=None, equalizer=None, preset="Game"):
+    from ps3hub.audio.fxsound_backend import FxSoundStatus
+
+    return FxSoundStatus(
+        found=True, running=True, power=True,
+        selected_preset=preset,
+        effects=dict(effects or {}),
+        equalizer=dict(equalizer or {}),
+    )
+
+
+def test_status_values_are_adopted_into_the_active_profile():
+    from ps3hub.audio.engine import AudioEngine, _profile_from_status
+    from ps3hub.audio.profiles import AudioProfile
+
+    base = AudioProfile(bass=5.0, clarity=5.0, surround=4.0, dynamic_boost=2.0)
+    status = _status_with(
+        effects={"bass": 8.0, "clarity": 1.0},
+        equalizer={"num_bands": 2, "master_gain": -2.5,
+                   "bands": [{"index": 0, "frequency": 100.0, "gain": 3.0},
+                             {"index": 1, "frequency": 1000.0, "gain": -4.0}]},
+        preset="Extreme Bass",
+    )
+    merged = _profile_from_status(base, status)
+    assert merged.bass == 8.0
+    assert merged.clarity == 1.0
+    assert merged.surround == 4.0, "levels FxSound omits must be kept"
+    assert merged.master_gain_db == -2.5
+    assert merged.eq == [(100.0, 3.0), (1000.0, -4.0)]
+    # FxSound only supports 5/10/15/20/31 bands, so a 2-band status snaps up.
+    assert merged.eq_bands == 5
+    assert merged.preset_name == "Extreme Bass"
+
+
+def test_an_empty_status_leaves_the_profile_alone():
+    from ps3hub.audio.engine import _profile_from_status
+    from ps3hub.audio.profiles import AudioProfile
+
+    base = AudioProfile(bass=5.0, eq=[(100.0, 2.0)], preset_name="Mine")
+    merged = _profile_from_status(base, _status_with(preset=""))
+    assert merged == base.clamped()
+
+
+def test_a_running_backend_receives_profile_updates():
+    from ps3hub.audio.engine import AudioEngine
+
+    engine = AudioEngine.__new__(AudioEngine)
+    calls: list[tuple] = []
+
+    class _Fx:
+        def apply_equalizer(self, profile):
+            calls.append(("eq", profile))
+
+        def set_effects(self, effects):
+            calls.append(("fx", effects))
+
+        def set_preset(self, name):
+            calls.append(("preset", name))
+
+        def set_output(self, name):
+            calls.append(("output", name))
+
+    class _Endpoint:
+        device_id = "{d}"
+        name = "Speakers"
+
+    engine._fxsound = _Fx()
+    engine._enabled = True
+    engine._backend_kind = "fxsound"
+    engine.default_endpoint = lambda: _Endpoint()
+    engine.set_profile = lambda profile: calls.append(("stored", profile))
+
+    from ps3hub.audio.profiles import AudioProfile
+    engine.update_profile(AudioProfile(bass=9.0, preset_name="X"))
+    kinds = [kind for kind, _payload in calls]
+    assert kinds == ["stored", "eq", "fx", "preset", "output"]
+
+
+def test_updates_do_not_touch_fxsound_when_it_is_not_the_backend():
+    from ps3hub.audio.engine import AudioEngine
+
+    engine = AudioEngine.__new__(AudioEngine)
+
+    class _Fx:
+        def __getattr__(self, name):
+            raise AssertionError("FxSound must not be driven by the native backend")
+
+    engine._fxsound = _Fx()
+    engine._enabled = True
+    engine._backend_kind = "native"
+    engine.set_profile = lambda profile: None
+    engine.update_profile(AudioProfile())  # must not raise
+
+
+# ---------------------------------------------- status-file mirroring ---
+
+
+def test_status_stamp_tracks_the_status_file(tmp_path, monkeypatch):
+    from ps3hub.audio import fxsound_backend as fb
+
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    backend = fb.FxSoundBackend()
+    assert backend.status_file_stamp() is None
+
+    status_path = tmp_path / "FxSound" / "status.json"
+    status_path.parent.mkdir()
+    status_path.write_text("{}", encoding="utf-8")
+    first = backend.status_file_stamp()
+    assert first is not None
+
+    import os
+    later = first[0] + 1_000_000  # one millisecond later, in ns
+    os.utime(status_path, ns=(later, later))
+    second = backend.status_file_stamp()
+    assert second != first
+    assert second[1] == first[1]
+
+
+@dataclass
+class _MirrorStatus:
+    found: bool = True
+    running: bool = True
+    error: str = ""
+    selected_preset: str = ""
+    selected_output: str = ""
+    effects: dict = field(default_factory=dict)
+    equalizer: dict = field(default_factory=dict)
+
+
+@dataclass
+class _MirrorProcessingState:
+    active: bool = False
+    device_name: str = ""
+    sample_rate: float | None = None
+    channels: int = 0
+    blocks_processed: int = 0
+    drops: int = 0
+    error: str = ""
+
+
+class _MirrorEngine:
+    """Serves pre-loaded statuses and stamps in poll order.
+
+    ``force=True`` reads (the view's startup probe) always get a harmless
+    not-found status, so the poll scenario is not polluted by construction
+    traffic; the queued ``statuses`` are served to the poll itself.
+    """
+
+    def __init__(self, statuses, stamps):
+        self._statuses = list(statuses)
+        self._stamps = list(stamps)
+        self.initial_status = _MirrorStatus(found=False, running=False)
+        self.reads = 0
+        self.stamp_reads = 0
+        self.adopted = []
+        # What the view's refresh() touches at construction time.
+        self.enabled = False
+        self.auto_output = False
+        self.processing_state = _MirrorProcessingState()
+
+    def fxsound_status_stamp(self):
+        stamp = self._stamps[min(self.stamp_reads, len(self._stamps) - 1)]
+        self.stamp_reads += 1
+        return stamp
+
+    def fxsound_status(self, force=False):
+        if force:
+            return self.initial_status
+        status = self._statuses[min(self.reads, len(self._statuses) - 1)]
+        self.reads += 1
+        return status
+
+    def default_endpoint(self):
+        return None
+
+    def endpoints(self):
+        return []
+
+    def fxsound_download_url(self):
+        return "https://www.fxsound.com/download"
+
+    def adopt_fxsound_status(self, status):
+        self.adopted.append(status)
+
+
+@contextmanager
+def _mirror_view(engine):
+    from ps3hub.ui.view_audio import AudioView
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        yield AudioView(root, engine_provider=lambda: engine, on_changed=lambda: None)
+    finally:
+        root.destroy()
+
+
+def test_view_poll_mirrors_an_external_status_change():
+    from ps3hub.ui.view_audio import AudioView
+
+    before = _MirrorStatus()
+    after = _MirrorStatus(effects={"bass": 7.5},
+                          equalizer={"num_bands": 10, "master_gain": 2.0})
+    engine = _MirrorEngine([after], [(1, 10), (2, 12), (2, 12)])
+    with _mirror_view(engine) as view:
+        view._fx_ui_enabled = True
+        view._mirror_stamp = (1, 10)
+        view._fxsig = view._fx_signature(before)
+        view._poll_status_file()
+        assert engine.adopted == [after]
+        assert view._effect_vars["bass"].get() == 7.5
+        # Consumed: the next tick with the same stamp re-reads nothing.
+        view._poll_status_file()
+        assert engine.reads == 1
+
+
+def test_view_poll_ignores_the_echo_of_its_own_push():
+    same = _MirrorStatus()
+    engine = _MirrorEngine([same, same], [(1, 10), (2, 12), (2, 12)])
+    with _mirror_view(engine) as view:
+        view._fx_ui_enabled = True
+        view._mirror_stamp = (1, 10)
+        view._fxsig = view._fx_signature(same)
+        view._poll_status_file()
+        assert engine.adopted == []
+        assert engine.reads == 1
+
+
+def test_view_poll_waits_while_a_band_is_being_dragged():
+    engine = _MirrorEngine([_MirrorStatus()], [(1, 10), (2, 12)])
+    with _mirror_view(engine) as view:
+        view._fx_ui_enabled = True
+        view._mirror_stamp = (1, 10)
+        view._fxsig = view._fx_signature(_MirrorStatus())
+        view._eq_graph._drag_index = 0
+        view._poll_status_file()
+        assert view._mirror_stamp == (1, 10), "stamp must stay pending"
+        assert engine.reads == 0
+
+
+def test_view_poll_retries_a_file_that_was_read_mid_write():
+    broken = _MirrorStatus(running=False, error="Could not read FxSound status")
+    engine = _MirrorEngine([broken], [(1, 10), (2, 12)])
+    with _mirror_view(engine) as view:
+        view._fx_ui_enabled = True
+        view._mirror_stamp = (1, 10)
+        view._fxsig = view._fx_signature(_MirrorStatus())
+        view._poll_status_file()
+        assert view._mirror_stamp == (1, 10), "stamp must not be consumed"
+        assert engine.adopted == []
+
+
+def test_view_poll_does_nothing_while_fxsound_is_down():
+    engine = _MirrorEngine([_MirrorStatus()], [(1, 10), (2, 12)])
+    with _mirror_view(engine) as view:
+        view._fx_ui_enabled = False
+        view._mirror_stamp = (1, 10)
+        view._poll_status_file()
+        assert engine.reads == 0
+
+
+# ------------------------------------------------- tray icon rendering ---
+
+
+def test_tray_icon_kind_thresholds():
+    from ps3hub.tray import tray_icon_kind
+
+    assert tray_icon_kind(False, 90) == "off"
+    assert tray_icon_kind(True, None) == "off"
+    assert tray_icon_kind(True, 90) == "ok"
+    assert tray_icon_kind(True, 30) == "ok"
+    assert tray_icon_kind(True, 29) == "low"
+    assert tray_icon_kind(True, 15) == "low"
+    assert tray_icon_kind(True, 14) == "critical"
+    assert tray_icon_kind(True, 5, charging=True) == "charging"
+    assert tray_icon_kind(False, 5, charging=True) == "off"
+
+
+def test_headset_icon_shape_is_symmetric_and_nonempty():
+    from ps3hub.tray import headset_icon_pixels
+
+    rows = headset_icon_pixels("ok", 32)
+    assert any(any(row) for row in rows), "the drawing must not be blank"
+    for row in rows:
+        assert row == row[::-1], "a front-facing headset is left/right symmetric"
+    # The headband crosses the vertical centre line at the top (its outer
+    # edge lands on row 5 for a 32px drawing).
+    assert rows[5][16] == 0xFF
+    assert rows[0][16] == 0, "nothing above the band"
+    # Nothing is drawn in the bottom corners.
+    assert rows[31][0] == 0 and rows[31][31] == 0
+
+
+def test_every_icon_kind_renders_a_distinct_accent():
+    from ps3hub.tray import _rgba_bytes_for_kind
+
+    seen = set()
+    for kind in ("ok", "low", "critical", "off", "charging"):
+        data = _rgba_bytes_for_kind(kind, 32)
+        assert len(data) == 32 * 32 * 4
+        # Collect one lit pixel's colour: the alpha channel is every 4th byte.
+        alpha = data[3::4]
+        lit = alpha.index(255) * 4
+        seen.add((data[lit + 2], data[lit], data[lit + 1]))  # BGR -> RGB
+    assert len(seen) == 5, "each state must carry its own colour"
+
+
+# ------------------------------------------------- forced windows toasts ---
+
+
+def test_settings_round_trip_keeps_force_windows_toasts(tmp_path):
+    from ps3hub.config import ConfigStore
+
+    store = ConfigStore(tmp_path / "config.json")
+    config = store.load()
+    config.settings.force_windows_toasts = True
+    assert store.save(config)
+    reloaded = store.load()
+    assert reloaded.settings.force_windows_toasts is True
+    assert reloaded.settings.force_windows_toasts != \
+        __import__("ps3hub.config", fromlist=["Settings"]).Settings().force_windows_toasts
+
+
+def test_toast_center_forces_the_windows_route(tmp_path):
+    import tkinter as tk
+    from ps3hub.ui.toast import ToastCenter
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        center = ToastCenter(root, "Hub")
+        center.set_force_windows(True)
+        root.deiconify()
+        root.update()
+        center.show("Forced", "windows even while visible", "ok")
+        # Delivery happens on the pump's timer; pump events by hand, since
+        # a mainloop here clashes with the Tk roots other tests created.
+        deadline = time.monotonic() + 0.5
+        while time.monotonic() < deadline and center.windows_shown == 0:
+            root.update()
+            time.sleep(0.01)
+        assert center.windows_shown == 1
+        assert center.in_app_shown == 0
+        center.shutdown()
+    finally:
+        root.destroy()
+
+
+# ----------------------------------------------------- live equalizer push ---
+
+
+def test_apply_equalizer_once_is_a_single_invocation(monkeypatch):
+    from ps3hub.audio import fxsound_backend as fb
+
+    calls = []
+    monkeypatch.setattr(fb.FxSoundBackend, "_send",
+                        lambda self, *a: calls.append(list(a)) or True)
+    monkeypatch.setattr(fb.FxSoundBackend, "exe_path",
+                        property(lambda self: fb.Path("C:/x/fxsound.exe")),
+                        raising=False)
+    backend = fb.FxSoundBackend()
+    profile = AudioProfile(
+        eq=[(100.0, 3.0), (1000.0, -4.0)], eq_bands=10,
+        master_gain_db=2.0, filter_q=1.5, volume_leveling_db=1.0,
+        balance_db=-2.0,
+    )
+    assert backend.apply_equalizer_once(profile) is True
+    assert len(calls) == 1, "the whole block must ride on one invocation"
+    line = " ".join(calls[0])
+    assert line.startswith("--num_bands=10")
+    assert "--set_band_freq=" in line and "0:100" in line and "1:1000" in line
+    assert "--set_band_gain=" in line and "0:3" in line and "1:-4" in line
+    assert "--master_gain=+2" in line or "--master_gain=2.0" in line
+    assert "--filter_q=1.5" in line
+    assert "--volume_leveling=1.0" in line
+    assert "--balance=-2.0" in line
+
+
+def test_request_live_push_coalesces_into_one_send(monkeypatch):
+    from ps3hub.audio import fxsound_backend as fb
+
+    sends = []
+    monkeypatch.setattr(fb.FxSoundBackend, "_send",
+                        lambda self, *a: sends.append(list(a)) or True)
+    monkeypatch.setattr(fb.FxSoundBackend, "exe_path",
+                        property(lambda self: fb.Path("C:/x/fxsound.exe")),
+                        raising=False)
+    backend = fb.FxSoundBackend()
+    backend.LIVE_PUSH_INTERVAL = 0.25  # wider than the whole request burst
+
+    for gain in (1.0, 2.0, 3.0, 6.0):
+        backend.request_live_push(AudioProfile(eq=[(1000.0, gain)]))
+        time.sleep(0.01)
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and not sends:
+        time.sleep(0.01)
+    time.sleep(0.2)
+    assert len(sends) == 1, f"expected one coalesced send, got {len(sends)}"
+    line = " ".join(sends[0])
+    assert "0:6.0" in line, "only the latest curve must be sent"
+    gain_flags = line.split("--set_band_gain=")[1].split("--")[0]
+    assert "1.0" not in gain_flags, "earlier drag positions must not ride along"
+
+
+def test_focus_guard_restores_the_previous_foreground(monkeypatch):
+    from ps3hub.audio import fxsound_backend as fb
+
+    class FakeUser32:
+        def __init__(self):
+            self.foreground = 111
+            self.calls = []
+
+        def GetForegroundWindow(self):
+            self.calls.append("get")
+            return self.foreground
+
+        def SetForegroundWindow(self, hwnd):
+            value = getattr(hwnd, "value", hwnd)  # normalise c_void_p
+            self.foreground = value
+            self.calls.append(("set", value))
+
+        def keybd_event(self, *args):
+            self.calls.append("key")
+
+    fake = FakeUser32()
+    monkeypatch.setattr(fb, "_focus_user32", fake)
+    monkeypatch.setattr(fb.subprocess, "run",
+                        lambda *a, **k: fake.__setattr__("foreground", 222))
+    backend = fb.FxSoundBackend()
+    monkeypatch.setattr(fb.FxSoundBackend, "exe_path",
+                        property(lambda self: fb.Path("C:/x/fxsound.exe")),
+                        raising=False)
+    backend._send("--status")
+    assert int(fake.foreground) == 111, "the user's window must get focus back"
+    assert any(c == ("set", 111) for c in fake.calls)
+
+
+def test_stop_live_push_halts_the_worker():
+    from ps3hub.audio import fxsound_backend as fb
+
+    backend = fb.FxSoundBackend()
+    backend.request_live_push(AudioProfile())
+    backend.stop_live_push()
+    assert backend._live_stop.is_set()

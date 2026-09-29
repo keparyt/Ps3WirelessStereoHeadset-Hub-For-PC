@@ -5,6 +5,14 @@ default output, and see at a glance what the engine is actually doing -
 including the optional FxSound integration when that application is
 installed.
 
+The FxSound features are honest about their dependency: the equalizer card
+and the preset controls only work when a FxSound instance is up and
+answering. When it is installed but stopped the view offers to start it; when
+it is not installed at all the view says so and points at the download page.
+Before any FxSound feature is used, the view loads **all** of the
+application's presets and mirrors its current settings into the active
+profile, so the Hub shows the same exact configuration FxSound is running.
+
 Everything here reads from the :class:`~ps3hub.audio.engine.AudioEngine`
 facade; no COM, no HID and no thread ownership leaks into the view.
 """
@@ -13,11 +21,12 @@ from __future__ import annotations
 
 import tkinter as tk
 from dataclasses import replace as dataclass_replace
+from tkinter import messagebox as tkmessagebox
 from tkinter import ttk
 from typing import Any, Callable
 
 from ..applog import get_logger
-from .theme import ABYSS, FAINT, FAULT, ICE, IDLE, LIVE, MUTED, PANEL, PAPER, WARN, fonts
+from .theme import ABYSS, FAINT, FAULT, GOLD, IDLE, LIVE, MUTED, PANEL, PAPER, WARN, fonts
 from .widget_eq import BAND_COUNTS, EQGraph
 from .widgets import Banner, Card, KeyValue, ScrollFrame, StatusPill
 
@@ -38,6 +47,16 @@ class AudioView(tk.Frame):
         self._on_changed = on_changed
         self._suspend = False
         self._eq_loaded = False
+        # The most recent FxSound status the view knows about, plus whether
+        # the FxSound features are currently unlocked.
+        self._last_fx_status: Any = None
+        self._fx_ui_enabled = False
+        # Live-mirroring bookkeeping: the status.json write we last saw, and
+        # a fingerprint of the status we last applied, so the poll can tell
+        # "FxSound changed something on its own" apart from "this is the
+        # echo of a push we just made".
+        self._mirror_stamp: tuple[int, int] | None = None
+        self._fxsig: tuple | None = None
         self._build()
         self.refresh()
 
@@ -167,8 +186,20 @@ class AudioView(tk.Frame):
             wraplength=620,
         )
         self._fxsound_detail.pack(fill="x")
-        ttk.Button(fxsound.body, text="Check FxSound status",
-                   command=self._probe_fxsound).pack(anchor="w", pady=(10, 0))
+
+        buttons = tk.Frame(fxsound.body, bg=PANEL)
+        buttons.pack(fill="x", pady=(10, 0))
+        self._fx_start_button = ttk.Button(
+            buttons, text="Start FxSound", command=self._on_start_fxsound)
+        self._fx_start_button.pack(side="left")
+        self._fx_install_button = ttk.Button(
+            buttons, text="Open the FxSound download page",
+            command=self._on_open_download_page)
+        self._fx_install_button.pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="Check FxSound status",
+                   command=self._probe_fxsound).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="Sync from FxSound now",
+                   command=self._on_sync_from_fxsound).pack(side="left", padx=(8, 0))
 
     # ----------------------------------------------------------- equalizer --
 
@@ -231,17 +262,21 @@ class AudioView(tk.Frame):
         files.pack(fill="x", pady=(12, 0))
         self._preset_var = tk.StringVar(value="")
         self._preset_box = ttk.Combobox(
-            files, textvariable=self._preset_var, state="readonly", width=24)
+            files, textvariable=self._preset_var, state="disabled", width=24)
         self._preset_box.pack(side="left")
         self._preset_box.bind("<<ComboboxSelected>>", self._on_pick_preset)
-        ttk.Button(files, text="Load", command=self._on_load_preset
-                   ).pack(side="left", padx=(8, 0))
-        ttk.Button(files, text="Save as...", command=self._on_save_preset
-                   ).pack(side="left", padx=(6, 0))
-        ttk.Button(files, text="Import .fac...", command=self._on_import_fac
-                   ).pack(side="left", padx=(6, 0))
-        ttk.Button(files, text="Export .fac...", command=self._on_export_fac
-                   ).pack(side="left", padx=(6, 0))
+        self._preset_load = ttk.Button(files, text="Load",
+                                       command=self._on_load_preset, state="disabled")
+        self._preset_load.pack(side="left", padx=(8, 0))
+        self._preset_save = ttk.Button(files, text="Save as...",
+                                       command=self._on_save_preset, state="disabled")
+        self._preset_save.pack(side="left", padx=(6, 0))
+        self._preset_import = ttk.Button(files, text="Import .fac...",
+                                         command=self._on_import_fac, state="disabled")
+        self._preset_import.pack(side="left", padx=(6, 0))
+        self._preset_export = ttk.Button(files, text="Export .fac...",
+                                         command=self._on_export_fac, state="disabled")
+        self._preset_export.pack(side="left", padx=(6, 0))
 
         self._eq_banner = Banner(
             body,
@@ -249,6 +284,253 @@ class AudioView(tk.Frame):
             "processor, and by the Hub's own DSP otherwise.",
         )
         self._eq_banner.pack(fill="x", pady=(10, 0))
+
+    # ------------------------------------------------------ fxsound gating --
+
+    def _fxsound_ready(self) -> tuple[bool, str]:
+        """Whether FxSound features may be used, and why not if they may not.
+
+        ``reason`` is ``""`` when ready, ``"missing"`` when the application is
+        not installed and ``"stopped"`` when it is installed but not running.
+        """
+        status = self._last_fx_status
+        if status is None or not getattr(status, "found", False):
+            return False, "missing"
+        if not getattr(status, "running", False):
+            return False, "stopped"
+        return True, ""
+
+    def _gate_ui(self) -> None:
+        """Enable the FxSound-dependent controls only when FxSound is up."""
+        ready, _reason = self._fxsound_ready()
+        self._fx_ui_enabled = ready
+        state = "normal" if ready else "disabled"
+        self._eq_graph.set_enabled(ready)
+        self._band_menu.configure(state=state)
+        self._preset_box.configure(state=state)
+        for button in (self._preset_load, self._preset_save,
+                       self._preset_import, self._preset_export):
+            button.configure(state=state)
+        found = bool(getattr(self._last_fx_status or (), "found", False))
+        self._fx_start_button.configure(
+            state="normal" if found and not ready else "disabled")
+        self._fx_install_button.configure(
+            state="normal" if not found else "disabled")
+
+    def _require_fxsound(self, prompt_start: bool = True) -> bool:
+        """Make FxSound usable before a feature runs, or explain why not.
+
+        Installed but stopped: ask the user, then start it and wait.
+        Not installed: point at the download page. Returns whether the caller
+        may proceed.
+        """
+        engine = self._engine_provider()
+        if engine is None:
+            return False
+        self._probe_fxsound(quiet=True)
+        ready, reason = self._fxsound_ready()
+        if ready:
+            return True
+        if reason == "stopped" and prompt_start:
+            if tkmessagebox.askyesno(
+                    "Start FxSound",
+                    "FxSound is installed but is not running.\n\n"
+                    "The Hub drives FxSound through its own command line, so "
+                    "the application has to be up for this feature.\n\n"
+                    "Start FxSound now?",
+                    parent=self):
+                return self._start_and_settle()
+            self._eq_banner.set(
+                "FxSound is not running, so that feature stayed locked. "
+                "Start FxSound (or press “Start FxSound”) and try again.",
+                "warn")
+            return False
+        if reason == "missing":
+            url = ""
+            try:
+                url = engine.fxsound_download_url()
+            except AttributeError:
+                url = ""
+            if tkmessagebox.showwarning(
+                    "FxSound is not installed",
+                    "FxSound is not installed on this PC, so the Hub cannot "
+                    "drive it.\n\n"
+                    "FxSound is free and open source. Install it from:\n" + url,
+                    parent=self):
+                self._on_open_download_page()
+            else:
+                self._eq_banner.set(
+                    "FxSound is not installed. Install it, then press "
+                    "“Check FxSound status”.", "warn")
+        return False
+
+    def _start_and_settle(self) -> bool:
+        """Start FxSound, wait for it to answer, and reload everything."""
+        engine = self._engine_provider()
+        if engine is None:
+            return False
+        self._fxsound_detail.configure(text="Starting FxSound...", fg=MUTED)
+        self.update_idletasks()
+        status = engine.fxsound_launch()
+        self._last_fx_status = status
+        if not status.running:
+            self._eq_banner.set(
+                f"FxSound did not come up: {status.error or 'no response'}. "
+                "Check the FxSound installation.", "error")
+            self._render_fxsound(status)
+            return False
+        self._eq_banner.set("FxSound is running. Loading its presets and "
+                            "current settings.", "info")
+        self._load_full_state(status, force=True)
+        self._render_fxsound(status)
+        self._on_changed()
+        return True
+
+    def _on_start_fxsound(self) -> None:
+        self._start_and_settle()
+
+    def _on_open_download_page(self) -> None:
+        """Open the FxSound download page in the default browser."""
+        import webbrowser
+        engine = self._engine_provider()
+        url = ""
+        if engine is not None:
+            try:
+                url = engine.fxsound_download_url()
+            except AttributeError:
+                url = ""
+        if url:
+            webbrowser.open(url)
+
+    # ------------------------------------------- load FxSound's full state --
+
+    @staticmethod
+    def _fx_signature(status) -> tuple:
+        """Fingerprint of the status fields the mirror adopts.
+
+        Two statuses with equal fingerprints produce equal UI state, so a
+        file rewrite that carries nothing new is skipped rather than
+        re-drawn over the user's in-progress edits.
+        """
+        eq = getattr(status, "equalizer", {}) or {}
+        bands = tuple(
+            (float(b.get("frequency", 0.0)), float(b.get("gain", 0.0)))
+            for b in (eq.get("bands") or [])
+        )
+        effects = getattr(status, "effects", {}) or {}
+        return (
+            tuple(sorted((k, round(float(v), 2)) for k, v in effects.items())),
+            int(eq.get("num_bands", 0) or 0),
+            round(float(eq.get("master_gain", 0.0) or 0.0), 2),
+            round(float(eq.get("volume_leveling", 0.0) or 0.0), 2),
+            round(float(eq.get("filter_q", 0.0) or 0.0), 2),
+            round(float(eq.get("balance", 0.0) or 0.0), 2),
+            bands,
+            str(getattr(status, "selected_preset", "") or ""),
+            str(getattr(status, "selected_output", "") or ""),
+        )
+
+    def _safe_stamp(self, engine) -> tuple[int, int] | None:
+        try:
+            return engine.fxsound_status_stamp()
+        except AttributeError:
+            return None
+
+    def _poll_status_file(self) -> None:
+        """Re-mirror when FxSound rewrites status.json on its own.
+
+        Called from ``refresh`` on every tick while the Audio page is open.
+        Cheap guards run before anything heavier happens: a band drag must
+        not be in progress (a mirror would yank the point out of the user's
+        hand), the page must be unlocked (FxSound up), the file stamp must
+        actually have changed (one stat call), and the new content must
+        differ from what was already applied (the echo of our own pushes
+        carries no news). A stamp is only consumed once its file parsed
+        cleanly, so a read that landed mid-write is retried next tick.
+        """
+        if not self._fx_ui_enabled:
+            return
+        engine = self._engine_provider()
+        if engine is None:
+            return
+        if getattr(self._eq_graph, "_drag_index", None) is not None:
+            return
+        stamp = self._safe_stamp(engine)
+        if stamp is None or stamp == self._mirror_stamp:
+            return
+        # The file was just written, so it is fresh: reading it back does
+        # not need a --status round trip to the application.
+        status = engine.fxsound_status(force=False)
+        if getattr(status, "error", "") and not getattr(status, "running", False):
+            return  # likely read mid-write; the stamp stays pending
+        self._mirror_stamp = stamp
+        self._last_fx_status = status
+        if not getattr(status, "running", False):
+            self._render_fxsound(status)
+            return
+        if self._fx_signature(status) == self._fxsig:
+            return
+        # FxSound changed its own state (a preset, the app's sliders, the
+        # output device): pull the whole thing in again.
+        self._load_full_state(status)
+
+    def _load_full_state(self, status=None, force: bool = False) -> Any:
+        """Pull everything FxSound knows into the view and the active profile.
+
+        All presets (built-in and user) fill the dropdown, and the
+        application's live equalizer, effect levels and selected preset are
+        adopted as the active profile. Called before FxSound features are
+        used and when the view first sees a running instance, so the Hub
+        always starts from the same exact configuration as FxSound.
+        """
+        engine = self._engine_provider()
+        if engine is None:
+            return None
+        if status is None:
+            status = engine.fxsound_status(force=force)
+        self._last_fx_status = status
+        self._mirror_stamp = self._safe_stamp(engine)
+        if not getattr(status, "running", False):
+            return status
+        # Adopt the live settings into the active profile, then draw them.
+        try:
+            engine.adopt_fxsound_status(status)
+        except AttributeError:
+            pass
+        self._adopt_equalizer_from_status(status)
+        self._sync_effect_vars_from_status(status)
+        self._refresh_preset_list(status)
+        self._gate_ui()
+        # Fingerprint what was applied, so the file poll recognises the echo
+        # of this very state and does not mirror it back as a user edit.
+        self._fxsig = self._fx_signature(status)
+        return status
+
+    def _sync_effect_vars_from_status(self, status) -> None:
+        """Mirror FxSound's five effect levels into the sliders."""
+        effects = getattr(status, "effects", {}) or {}
+        if not effects:
+            return
+        self._suspend = True
+        try:
+            for key in ("bass", "clarity", "ambience", "surround",
+                        "dynamic_boost"):
+                if key in effects and key in self._effect_vars:
+                    self._effect_vars[key].set(float(effects[key]))
+            if getattr(status, "master_gain", 0.0):
+                self._gain_var.set(float(status.master_gain))
+        finally:
+            self._suspend = False
+
+    def _on_sync_from_fxsound(self) -> None:
+        if not self._require_fxsound(prompt_start=False):
+            return
+        status = self._load_full_state(force=True)
+        if status is not None and getattr(status, "running", False):
+            preset = getattr(status, "selected_preset", "") or "no preset"
+            self._eq_banner.set(
+                f"Loaded every preset and FxSound's current settings "
+                f"(preset: {preset}).", "info")
 
     # --------------------------------------------------------------- events --
 
@@ -337,6 +619,8 @@ class AudioView(tk.Frame):
         bands = list(zip(frequencies[:count], gains[:count]))
         self._commit_eq(eq=bands)
         self._refresh_eq_summary(bands)
+        # Hear it while dragging: the curve goes to FxSound live.
+        self._request_live_push()
 
     def _on_band_count(self, _event=None) -> None:
         try:
@@ -349,9 +633,27 @@ class AudioView(tk.Frame):
                         eq=[(freq, 0.0) for freq in frequencies])
         self._eq_graph.set_curve(frequencies, [0.0] * count)
         self._refresh_eq_summary([(f, 0.0) for f in frequencies])
+        self._request_live_push()
 
     def _on_eq_control(self, key: str) -> None:
         self._commit_eq(**{key: self._eq_vars[key].get()})
+        self._request_live_push()
+
+    def _request_live_push(self) -> None:
+        """Push the current curve to FxSound as the user moves a control.
+
+        The backend coalesces the stream into rate-bounded single-invocation
+        pushes on its own thread, and its focus guard keeps FxSound from
+        raising itself over the user's window while dragging.
+        """
+        if not getattr(self._last_fx_status, "running", False):
+            return
+        engine, profile = self._active_profile()
+        if engine is None or profile is None:
+            return
+        push = getattr(engine, "fxsound_request_live_push", None)
+        if callable(push):
+            push(profile)
 
     def _on_reset_eq(self) -> None:
         _, profile = self._active_profile()
@@ -367,6 +669,7 @@ class AudioView(tk.Frame):
         for key in self._eq_vars:
             self._eq_vars[key].set(0.0)
         self._refresh_eq_summary([(freq, 0.0) for freq in frequencies])
+        self._request_live_push()
 
     def _refresh_eq_summary(self, bands) -> None:
         touched = [g for _f, g in bands if abs(g) >= 0.05]
@@ -379,22 +682,32 @@ class AudioView(tk.Frame):
 
     # -------------------------------------------------------- preset files --
 
-    def _refresh_preset_list(self) -> None:
+    def _refresh_preset_list(self, status=None) -> None:
+        """Fill the preset dropdown with every preset FxSound reports."""
         engine = self._engine_provider()
         if engine is None:
             return
-        status = engine.fxsound_status()
-        names = list(status.user_presets)
-        if status.selected_preset and status.selected_preset not in names:
-            names.insert(0, status.selected_preset)
+        if status is None:
+            status = self._last_fx_status or engine.fxsound_status()
+            self._last_fx_status = status
+        names = list(getattr(status, "built_in_presets", []) or [])
+        names += [n for n in (getattr(status, "user_presets", []) or [])
+                  if n not in names]
+        selected = getattr(status, "selected_preset", "") or ""
+        if selected and selected not in names:
+            names.insert(0, selected)
         self._preset_box.configure(values=names)
-        if status.selected_preset:
-            self._preset_var.set(status.selected_preset)
+        if selected:
+            self._preset_var.set(selected)
+        elif names and not self._preset_var.get():
+            self._preset_var.set(names[0])
 
     def _on_pick_preset(self, _event=None) -> None:
         name = self._preset_var.get()
         engine = self._engine_provider()
         if engine is None or not name:
+            return
+        if not self._require_fxsound():
             return
         _, profile = self._active_profile()
         if profile is None:
@@ -407,7 +720,7 @@ class AudioView(tk.Frame):
             return
         # Read the preset back out of FxSound so the graph shows what it
         # actually applied, rather than what we asked for.
-        self._adopt_equalizer_from_status(status)
+        self._load_full_state(status)
 
     def _adopt_equalizer_from_status(self, status) -> None:
         eq = getattr(status, "equalizer", {}) or {}
@@ -419,7 +732,8 @@ class AudioView(tk.Frame):
         self._suspend = True
         try:
             self._band_var.set(f"{int(eq.get('num_bands', len(bands)))} Bands")
-            self._eq_graph.set_curve(frequencies, gains)
+            self._eq_graph.set_curve(frequencies, gains,
+                                     enabled=self._fx_ui_enabled)
             for key in ("master_gain_db", "volume_leveling_db",
                         "filter_q", "balance_db"):
                 if key in self._eq_vars and key in eq:
@@ -433,11 +747,15 @@ class AudioView(tk.Frame):
         self._on_pick_preset()
 
     def _on_save_preset(self) -> None:
-        from tkinter import simpledialog
         engine = self._engine_provider()
-        _, profile = self._active_profile()
-        if engine is None or profile is None:
+        if engine is None:
             return
+        if not self._require_fxsound():
+            return
+        _, profile = self._active_profile()
+        if profile is None:
+            return
+        from tkinter import simpledialog
         name = simpledialog.askstring("Save preset", "Preset name:",
                                       parent=self)
         if not name:
@@ -446,17 +764,16 @@ class AudioView(tk.Frame):
         # to be applied first or the saved preset would be the old curve.
         engine.apply_profile_via_fxsound(
             dataclass_replace(profile, preset_name=""), "")
-        status = engine.fxsound_status()
-        backend_status = self._save_via_backend(name)
-        if backend_status:
+        saved = self._save_via_backend(name)
+        if saved:
             self._eq_banner.set(f"Saved the preset “{name}”.", "info")
-            self._refresh_preset_list()
+            # Read the preset lists back so the new name is in the dropdown.
+            self._load_full_state(force=True)
         else:
             self._eq_banner.set(
                 "FxSound did not save the preset. It refuses when the current "
                 "preset has no unsaved changes, or when the user preset limit "
                 "is reached.", "warn")
-        del status
 
     def _save_via_backend(self, name: str) -> bool:
         engine = self._engine_provider()
@@ -476,23 +793,39 @@ class AudioView(tk.Frame):
         engine, profile = self._active_profile()
         if engine is None or profile is None:
             return
+        if not self._require_fxsound():
+            return
         imported, error = AudioProfile.from_fac(
             path, profile.device_id, profile.device_name)
         if error and not imported.eq:
             self._eq_banner.set(f"Could not read that preset: {error}", "error")
             return
-        engine.set_profile(imported)
+        # Hand the imported curve to the running FxSound instance, then read
+        # back what it actually applied.
+        status = engine.apply_profile_via_fxsound(imported, "")
+        if status.error:
+            engine.set_profile(imported)
         self._on_changed()
         self._show_profile_eq(imported)
         if error:
             self._eq_banner.set(error, "warn")
-        else:
+        elif status.error:
             self._eq_banner.set(
-                f"Loaded “{imported.preset_name or imported.name}” from the "
-                "preset file.", "info")
+                f"Loaded “{imported.preset_name or imported.name}”, but "
+                f"FxSound did not accept it: {status.error}", "warn")
+        else:
+            self._load_full_state(status)
+            self._eq_banner.set(
+                f"Loaded “{imported.preset_name or imported.name}” into "
+                "FxSound.", "info")
 
     def _on_export_fac(self) -> None:
         from tkinter import filedialog
+        # The exported file should be the configuration FxSound is actually
+        # running, so mirror its live settings into the profile first.
+        if self._last_fx_status is not None and \
+                getattr(self._last_fx_status, "running", False):
+            self._load_full_state(self._last_fx_status)
         _, profile = self._active_profile()
         if profile is None:
             return
@@ -521,7 +854,8 @@ class AudioView(tk.Frame):
         self._suspend = True
         try:
             self._band_var.set(f"{count} Bands")
-            self._eq_graph.set_curve(frequencies, gains)
+            self._eq_graph.set_curve(frequencies, gains,
+                                     enabled=self._fx_ui_enabled)
             for key in self._eq_vars:
                 self._eq_vars[key].set(float(getattr(profile, key)))
         finally:
@@ -547,19 +881,18 @@ class AudioView(tk.Frame):
 
     def _on_set_output(self) -> None:
         """Point Windows (and FxSound) at the chosen output device."""
-        from ..audio.device_monitor import set_default_render_endpoint
+        engine = self._engine_provider()
         name = self._output_var.get()
         device_id = getattr(self, "_endpoints_by_name", {}).get(name, "")
+        if engine is None:
+            return
         if not device_id:
             self._audio_banner.set("Choose an output device first.", "warn")
             return
-        ok, message = set_default_render_endpoint(device_id)
+        # Routed through the engine so the rate limit applies to the automatic
+        # switch as well as the manual one.
+        ok, message = engine.set_output_device(device_id, name)
         if ok:
-            # FxSound holds its own output selection, so it has to be told
-            # separately or it keeps playing to the previous device.
-            engine = self._engine_provider()
-            if engine is not None:
-                engine.fxsound_set_output(name)
             self._audio_banner.set(f"Output is now {name}.", "info")
         else:
             self._audio_banner.set(message, "warn")
@@ -575,28 +908,55 @@ class AudioView(tk.Frame):
     def maybe_auto_output(self) -> None:
         """Switch to the headset if the user asked us to.
 
-        Called when a device-arrival notification arrives. It is a no-op
-        unless the toggle is on, so the common case costs nothing.
+        Called when a device-arrival notification arrives. Three guards keep
+        this from misbehaving, because it runs unattended:
+
+        * it is a no-op unless the toggle is on;
+        * it does nothing if the chosen device is already the default;
+        * the engine rate-limits the change itself, so a device that keeps
+          arriving and leaving cannot turn this into a loop of disruptive
+          endpoint reassignments.
         """
         engine = self._engine_provider()
         if engine is None or not engine.auto_output:
             return
         self.refresh_outputs()
-        current = engine.default_endpoint()
-        if current is not None and current.name == self._output_var.get():
-            return
         name = self._output_var.get()
         if not name:
             return
-        self._output_var.set(name)
-        self._on_set_output()
+        current = engine.default_endpoint()
+        if current is not None and current.name == name:
+            return
+        device_id = getattr(self, "_endpoints_by_name", {}).get(name, "")
+        if not device_id:
+            return
+        ok, message = engine.set_output_device(device_id, name)
+        if ok:
+            self._audio_banner.set(f"Switched to {name} on connect.", "info")
+            self._on_changed()
 
-    def _probe_fxsound(self) -> None:
+    def _probe_fxsound(self, quiet: bool = False) -> None:
         engine = self._engine_provider()
         if engine is None:
             return
-        status = engine.fxsound_status(force=True)
+        try:
+            status = engine.fxsound_status(force=True)
+        except AttributeError:
+            return
+        self._last_fx_status = status
         self._render_fxsound(status)
+        if getattr(status, "running", False):
+            self._load_full_state(status)
+        if not quiet and not getattr(status, "running", False):
+            ready, reason = self._fxsound_ready()
+            if reason == "missing":
+                self._eq_banner.set(
+                    "FxSound is not installed. Install it from the download "
+                    "page to use the equalizer and presets here.", "warn")
+            elif reason == "stopped":
+                self._eq_banner.set(
+                    "FxSound is installed but not running. Press “Start "
+                    "FxSound” to use the equalizer and presets.", "warn")
 
     # -------------------------------------------------------------- refresh --
 
@@ -667,35 +1027,54 @@ class AudioView(tk.Frame):
 
             if not hasattr(self, "_fxsound_checked"):
                 self._fxsound_checked = True
-                self._render_fxsound(engine.fxsound_status())
+                # First look at FxSound: if it is already running, load every
+                # preset and mirror its live settings before anything else
+                # can use the feature.
+                self._load_full_state(force=True)
                 self.refresh_outputs()
                 self._auto_output_var.set(bool(getattr(engine, "auto_output", False)))
+            else:
+                # While the page is open, follow FxSound: when the
+                # application rewrote its status file on its own (preset
+                # change, its own sliders, output switch), re-mirror it.
+                self._poll_status_file()
+                # Re-render from the cached status so the gate follows
+                # without probing on every tick.
+                self._render_fxsound(self._last_fx_status)
         finally:
             self._suspend = False
 
     def _render_fxsound(self, status: Any) -> None:
-        if not getattr(status, "found", False):
+        found = bool(getattr(status, "found", False))
+        running = bool(getattr(status, "running", False))
+        if not found:
             self._fxsound_pill.set("Not installed", IDLE)
             self._fxsound_detail.configure(
                 text=(
-                    "FxSound (free, open source) is not installed. The Hub's "
-                    "own DSP works without it; this integration only drives an "
-                    "existing installation through its documented command line."
+                    "FxSound (free, open source) is not installed. Install it "
+                    "to drive the equalizer and its presets from the Hub; the "
+                    "Hub's own DSP works without it."
                 ),
                 fg=FAINT,
             )
+            self._gate_ui()
             return
-        if not getattr(status, "running", False):
-            self._fxsound_pill.set("Installed", IDLE)
+        if not running:
+            self._fxsound_pill.set("Installed · not running", WARN)
             self._fxsound_detail.configure(
-                text="FxSound is installed but is not running, so its status is unknown.",
+                text=(
+                    "FxSound is installed but is not running. Its equalizer "
+                    "and presets are locked here until the application is up; "
+                    "press “Start FxSound” to launch it."
+                ),
                 fg=MUTED,
             )
+            self._gate_ui()
             return
         if getattr(status, "power", False):
             self._fxsound_pill.set("Active", LIVE)
         else:
-            self._fxsound_pill.set("Standby", IDLE)
+            self._fxsound_pill.set("Running · standby", IDLE)
         parts = []
         if status.selected_output:
             parts.append(f"Output: {status.selected_output}")
@@ -711,3 +1090,4 @@ class AudioView(tk.Frame):
             text=" · ".join(parts) if parts else "FxSound is running.",
             fg=PAPER if status.power else MUTED,
         )
+        self._gate_ui()

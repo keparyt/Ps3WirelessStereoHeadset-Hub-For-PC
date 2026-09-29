@@ -19,7 +19,7 @@ from ..device import EventType, ServiceEvent
 from ..inputs import InputDescriptor, inputs_by_category
 from ..mappings import Mapping, Profile
 from .theme import (
-    ABYSS, DECK, FAINT, FAULT, ICE, ICE_WASH, IDLE, LIVE, MUTED, PANEL,
+    ABYSS, DECK, FAINT, FAULT, GOLD, GOLD_WASH, IDLE, LIVE, MUTED, PANEL,
     PANEL_HI, PAPER, RIDGE, SELECTION, WARN, fonts,
 )
 from .widgets import Banner, Card, ScrollFrame
@@ -82,7 +82,7 @@ class InputRow(tk.Frame):
 
     def set_selected(self, selected: bool) -> None:
         self._selected = selected
-        self._marker.configure(bg=ICE if selected else PANEL)
+        self._marker.configure(bg=GOLD if selected else PANEL)
         self._paint(SELECTION if selected else PANEL)
 
     def set_mapping(self, mapping: Mapping | None) -> None:
@@ -91,11 +91,11 @@ class InputRow(tk.Frame):
         elif not mapping.enabled:
             self._action.configure(text=f"{mapping.action_label} (off)", fg=WARN)
         else:
-            self._action.configure(text=mapping.action_label, fg=ICE)
+            self._action.configure(text=mapping.action_label, fg=GOLD)
 
     def flash(self) -> None:
         """Briefly highlight when this input is detected."""
-        self._paint(ICE_WASH)
+        self._paint(GOLD_WASH)
         self.after(280, lambda: self._paint(SELECTION if self._selected else PANEL))
 
 
@@ -357,7 +357,7 @@ class MappingView(tk.Frame):
             entry.pack(side="left", fill="x", expand=True)
             record = ttk.Button(row, text="Record", width=8)
             record.pack(side="left", padx=(6, 0))
-            preview = tk.Label(parent, text="", bg=PANEL, fg=ICE, font=font.small,
+            preview = tk.Label(parent, text="", bg=PANEL, fg=GOLD, font=font.small,
                                anchor="w")
             preview.pack(fill="x", pady=(3, 0))
 
@@ -365,7 +365,7 @@ class MappingView(tk.Frame):
                 combo = var.get().strip()
                 try:
                     parse_combo(combo)
-                    preview.configure(text=f"Sends {describe_combo(combo)}", fg=ICE)
+                    preview.configure(text=f"Sends {describe_combo(combo)}", fg=GOLD)
                 except Exception as exc:
                     preview.configure(text=str(exc), fg=FAULT)
                 self._apply_params()
@@ -509,7 +509,7 @@ class MappingView(tk.Frame):
         if self._listening:
             self._listen_button.configure(text="Stop listening")
             self._listen_label.configure(
-                text="Listening. Press a control on the headset now.", fg=ICE
+                text="Listening. Press a control on the headset now.", fg=GOLD
             )
         else:
             self._reset_listen()

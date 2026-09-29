@@ -15,7 +15,7 @@ from ..applog import log_dir, recent
 from ..device import HeadsetService, ServiceState
 from ..protocol import TARGET_PID, TARGET_VID
 from .theme import (
-    ABYSS, DECK, FAINT, FAULT, ICE, LIVE, MUTED, PANEL, PAPER, RIDGE, WARN, fonts,
+    ABYSS, DECK, FAINT, FAULT, GOLD, LIVE, MUTED, PANEL, PAPER, RIDGE, WARN, fonts,
 )
 from .widgets import Banner, Card, KeyValue, ScrollFrame
 
@@ -109,8 +109,8 @@ class DiagnosticsView(tk.Frame):
         text_wrap.pack(fill="both", expand=True)
         self._text = tk.Text(
             text_wrap, height=14, bg=DECK, fg=MUTED, font=font.code_small,
-            insertbackground=ICE, relief="flat", wrap="none", padx=10, pady=8,
-            selectbackground="#1D4457", borderwidth=0,
+            insertbackground=GOLD, relief="flat", wrap="none", padx=10, pady=8,
+            selectbackground="#3A3524", borderwidth=0,
         )
         scrollbar = ttk.Scrollbar(text_wrap, orient="vertical",
                                   command=self._text.yview)
@@ -229,7 +229,7 @@ class DiagnosticsView(tk.Frame):
                      font=font.strong, anchor="w").pack(side="left")
             tk.Label(head, text=f"seen {fingerprint.count}x", bg=PANEL, fg=WARN,
                      font=font.small).pack(side="right")
-            tk.Label(row, text=fingerprint.last_raw, bg=PANEL, fg=ICE,
+            tk.Label(row, text=fingerprint.last_raw, bg=PANEL, fg=GOLD,
                      font=font.code, anchor="w").pack(fill="x")
 
     def _render_log(self) -> None:

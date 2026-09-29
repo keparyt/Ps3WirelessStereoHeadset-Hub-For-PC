@@ -12,10 +12,12 @@ The usual routes for toasts on Windows are:
 * ``Shell_NotifyIconW`` balloon tips -- the old API, which Windows 10 and 11
   render as a normal toast in the corner.
 
-This module takes the third route. A tray icon exists only for as long as a
-notification is on screen and is removed afterwards, so nothing is left
-parked in the tray. A burst of notifications replaces the balloon's contents
-rather than stacking icons.
+This module takes the third route. The tray icon used as the balloon source
+is created once and kept for the notifier's lifetime - the previous
+create-per-burst, delete-afterwards scheme flickered in the tray and dropped
+toasts that arrived while the icon was being torn down. The icon is
+invisible (message-only window, no icon bitmap, no tooltip), so nothing
+appears parked in the tray.
 
 Threading: the UI calls this from the Tk thread and the dispatch thread calls
 it from the HID thread. A dedicated worker thread owns the tray window, so
@@ -37,8 +39,6 @@ log = get_logger("notify")
 
 IS_WINDOWS = os.name == "nt"
 
-#: How long the tray icon stays alive after the last balloon, in seconds.
-HOLD_SECONDS = 6.0
 #: Win32 balloon icon flavours (defined off Windows too, so tests can read them).
 NIIF_INFO = 0x1
 NIIF_WARNING = 0x2
@@ -153,11 +153,6 @@ if IS_WINDOWS:
         data.dwInfoFlags = _level_flag(level)
         return bool(_shell32.Shell_NotifyIconW(NIM_MODIFY, ctypes.byref(data)))
 
-    def _hide_balloon(window: int, uid: int) -> bool:
-        data = _base_data(window, uid)
-        data.uFlags = NIF_MESSAGE
-        return bool(_shell32.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(data)))
-
 else:
 
     def _pump() -> None:
@@ -173,8 +168,7 @@ else:
                       level: str) -> bool:
         return False
 
-    def _hide_balloon(window: Any, uid: int) -> bool:
-        return False
+
 
 
 class DesktopNotifier:
@@ -274,27 +268,19 @@ class DesktopNotifier:
         return self._window
 
     def _deliver(self, item: tuple[str, str, str]) -> None:
+        """Show the queued balloon on the persistent host icon.
+
+        The icon is created once per worker and never removed while the
+        worker lives, so a toast that arrives while another is on screen is
+        a cheap NIM_MODIFY rather than an icon churn cycle - the previous
+        create-per-burst, delete-afterwards scheme flickered in the tray
+        and dropped toasts that arrived during teardown. Windows retires
+        each balloon on its own schedule (a few seconds), so no manual hide
+        timer is needed; the worker simply keeps draining the queue.
+        """
         window = self._ensure_window()
         if window is None or not _add_icon(window, _TRAY_ID):
             log.debug("Tray icon unavailable; dropping a notification")
             return
-        try:
-            title, message, level = item
-            _show_balloon(window, _TRAY_ID, title, message, level)
-            deadline = time.monotonic() + HOLD_SECONDS
-            while not self._stop.is_set():
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                try:
-                    nxt = self._queue.get(timeout=min(remaining, 0.1))
-                except queue.Empty:
-                    time.sleep(0.02)
-                    continue
-                if nxt is None:
-                    self._stop.set()
-                    break
-                title, message, level = nxt
-                _show_balloon(window, _TRAY_ID, title, message, level)
-        finally:
-            _hide_balloon(window, _TRAY_ID)
+        title, message, level = item
+        _show_balloon(window, _TRAY_ID, title, message, level)

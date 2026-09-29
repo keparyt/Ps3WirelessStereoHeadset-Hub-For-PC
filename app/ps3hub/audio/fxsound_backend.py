@@ -17,6 +17,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,6 +37,10 @@ log = get_logger("audio.fxsound")
 _STATUS_RELATIVE = Path("FxSound") / "status.json"
 _STATUS_SETTLE_SECONDS = 2.5
 
+#: Where the installer lives. Surfaced by the UI when FxSound is missing;
+#: the Hub never downloads anything on its own.
+DOWNLOAD_URL = "https://www.fxsound.com/download"
+
 #: Documented CLI effect names and their allowed ranges (0.0-10.0).
 _FXound_EFFECT_KEYS = {
     "bass": ("bass", "bassboost", "bass_boost"),
@@ -48,6 +53,60 @@ _FXound_EFFECT_KEYS = {
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, float(value)))
+
+
+IS_WINDOWS = os.name == "nt"
+
+if IS_WINDOWS:
+    import ctypes as _ctypes
+    from ctypes import wintypes as _wintypes
+
+    _focus_user32 = _ctypes.WinDLL("user32", use_last_error=True)
+    _focus_user32.GetForegroundWindow.restype = _ctypes.c_void_p
+    _focus_user32.SetForegroundWindow.argtypes = [_ctypes.c_void_p]
+    _focus_user32.SetForegroundWindow.restype = _wintypes.BOOL
+    _focus_user32.keybd_event.argtypes = [
+        _wintypes.BYTE, _wintypes.BYTE, _wintypes.DWORD, _wintypes.ULONG,
+    ]
+    _VK_MENU = 0xA4            # the ALT key
+    _KEYEVENTF_KEYUP = 0x0002
+else:
+    _focus_user32 = None
+
+
+class _FocusGuard:
+    """Keep FxSound's CLI from stealing the desktop focus.
+
+    Every command is a fresh ``fxsound.exe`` invocation, and the application
+    raises its window when one arrives - which, during a live equalizer
+    drag, means the user's foreground application loses focus dozens of
+    times. The guard remembers the foreground window before the spawn and
+    restores it afterwards (the ALT pulse unlocks ``SetForegroundWindow``
+    from a background process, a documented Windows behaviour). No-op off
+    Windows.
+    """
+
+    @staticmethod
+    def capture() -> int | None:
+        if not IS_WINDOWS or _focus_user32 is None:
+            return None
+        try:
+            return int(_focus_user32.GetForegroundWindow() or 0) or None
+        except Exception:
+            return None
+
+    @staticmethod
+    def restore(hwnd: int | None) -> None:
+        if not IS_WINDOWS or _focus_user32 is None or not hwnd:
+            return
+        try:
+            if int(_focus_user32.GetForegroundWindow() or 0) == int(hwnd):
+                return
+            _focus_user32.keybd_event(_VK_MENU, 0, 0, 0)
+            _focus_user32.SetForegroundWindow(_ctypes.c_void_p(int(hwnd)))
+            _focus_user32.keybd_event(_VK_MENU, 0, _KEYEVENTF_KEYUP, 0)
+        except Exception:
+            pass
 
 
 def _band_pairs(values: "dict[int, float] | list[float]", render) -> list[str]:
@@ -150,6 +209,13 @@ class FxSoundBackend:
         self._exe = _candidate_paths()
         self._last_status: FxSoundStatus = FxSoundStatus()
         self._last_command_time = 0.0
+        # Live-equalizer push worker: one daemon thread that coalesces the
+        # drag stream into rate-bounded single-invocation pushes.
+        self._live_lock = threading.Lock()
+        self._live_pending = threading.Event()
+        self._live_stop = threading.Event()
+        self._live_worker: threading.Thread | None = None
+        self._latest_live_profile: Any = None
 
     # ------------------------------------------------------------- probing --
 
@@ -166,6 +232,55 @@ class FxSoundBackend:
 
     def is_installed(self) -> bool:
         return self.exe_path is not None
+
+    def launch(self) -> bool:
+        """Start the FxSound application without bringing it to the front.
+
+        ``fxsound.exe`` with no arguments starts (or focuses) the instance;
+        ``STARTUPINFO`` with ``SW_HIDE`` asks the fresh instance to keep its
+        window off screen, and the focus guard undoes any foreground steal.
+        This returns whether the process was handed off, not whether the
+        instance is up yet - use :meth:`wait_until_running`.
+        """
+        exe = self.exe_path
+        if exe is None:
+            return False
+        foreground = _FocusGuard.capture()
+        try:
+            extra: dict[str, Any] = {}
+            if IS_WINDOWS:
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = 0  # SW_HIDE
+                extra["startupinfo"] = startupinfo
+            subprocess.Popen(
+                [str(exe)],
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                **extra,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            log.error("Could not start FxSound: %s", exc)
+            return False
+        finally:
+            _FocusGuard.restore(foreground)
+        return True
+
+    def wait_until_running(self, timeout: float = 10.0) -> FxSoundStatus:
+        """Poll the status file until a running instance answers.
+
+        Returns the last status read; the caller checks ``running`` rather
+        than trusting the timeout. ``--status`` is forced on the first probe
+        because the file on disk can be minutes old when FxSound has just
+        been brought up.
+        """
+        deadline = time.monotonic() + max(0.0, timeout)
+        status = self.read_status(force=True)
+        while not status.running and time.monotonic() < deadline:
+            time.sleep(0.3)
+            status = self.read_status(force=True)
+        return status
 
     def read_status(self, force: bool = False) -> FxSoundStatus:
         """Ask the running instance to write status.json, then parse it.
@@ -216,6 +331,21 @@ class FxSoundBackend:
         if not appdata:
             return None
         return Path(appdata) / _STATUS_RELATIVE
+
+    def status_file_stamp(self) -> "tuple[int, int] | None":
+        """Identity of the last status.json write: ``(mtime_ns, size)``.
+
+        Cheap enough to poll on every UI tick. ``None`` when there is no
+        file, which is also the answer before FxSound's first write.
+        """
+        path = self._status_path()
+        if path is None:
+            return None
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        return (stat.st_mtime_ns, stat.st_size)
 
     @staticmethod
     def _status_fresh(path: Path | None) -> bool:
@@ -296,7 +426,9 @@ class FxSoundBackend:
         exe = self.exe_path
         if exe is None:
             return False
-        # Documented CLI: values attach with '=', no space.
+        # Documented CLI: values attach with '=', no space. The focus guard
+        # keeps the application from raising itself over the user's work.
+        foreground = _FocusGuard.capture()
         try:
             subprocess.run(
                 [str(exe), *arguments],
@@ -311,6 +443,8 @@ class FxSoundBackend:
         except (OSError, subprocess.SubprocessError) as exc:
             log.error("FxSound command failed: %s", exc)
             return False
+        finally:
+            _FocusGuard.restore(foreground)
 
     def set_power(self, enabled: bool) -> bool:
         return self._send(f"--power={'1' if enabled else '0'}")
@@ -461,3 +595,100 @@ class FxSoundBackend:
         self.set_volume_leveling(getattr(profile, "volume_leveling_db", 0.0))
         self.set_balance(getattr(profile, "balance_db", 0.0))
         return True
+
+    def apply_equalizer_once(self, profile: Any) -> bool:
+        """Push the whole equalizer block in a single CLI invocation.
+
+        The documented options accept comma-separated ``index:value`` pairs
+        and can be combined on one command line, so the live path needs one
+        process spawn per update rather than six. Band-count and frequency
+        changes are rare (they come from the selector or a preset), so they
+        ride along on the same line when present.
+        """
+        from .fac import default_band_frequencies
+
+        exe = self.exe_path
+        if exe is None:
+            return False
+        count = int(getattr(profile, "eq_bands", 10) or 10)
+        bands = list(getattr(profile, "eq", []) or [])
+        if not bands:
+            bands = [(freq, 0.0)
+                     for freq in default_band_frequencies(count)]
+        def _freq_text(value: float) -> str:
+            # Plain decimal, no exponent: the CLI parses "1000", not "1e+03".
+            return f"{_clamp(value, 20.0, 20000.0):.3f}".rstrip("0").rstrip(".") or "0"
+
+        arguments: list[str] = []
+        if len(bands) != count:
+            arguments.append(f"--num_bands={count}")
+        freqs = {index: freq
+                 for index, (freq, _g) in enumerate(bands[:count])}
+        gains = {index: gain
+                 for index, (_f, gain) in enumerate(bands[:count])}
+        arguments.append("--set_band_freq=" + ",".join(
+            f"{i}:{_freq_text(v)}" for i, v in sorted(freqs.items())))
+        arguments.append("--set_band_gain=" + ",".join(
+            f"{i}:{_clamp(v, BAND_GAIN_MIN_DB, BAND_GAIN_MAX_DB):.1f}"
+            for i, v in sorted(gains.items())))
+        arguments.append(
+            f"--master_gain={_clamp(getattr(profile, 'master_gain_db', 0.0), -20.0, 20.0):.1f}")
+        arguments.append(
+            f"--filter_q={_clamp(getattr(profile, 'filter_q', 1.0), FILTER_Q_MIN, FILTER_Q_MAX):.1f}")
+        arguments.append(
+            f"--volume_leveling={_clamp(getattr(profile, 'volume_leveling_db', 0.0), 0.0, 4.0):.1f}")
+        arguments.append(
+            f"--balance={_clamp(getattr(profile, 'balance_db', 0.0), -20.0, 20.0):.1f}")
+        return self._send(*arguments)
+
+    # ---------------------------------------------------------- live push --
+
+    #: Fastest cadence of live pushes while the user drags. FxSound applies
+    #: changes smoothly well below this rate; the cap bounds process spawns
+    #: during an energetic mouse move.
+    LIVE_PUSH_INTERVAL = 0.12
+
+    def request_live_push(self, profile: Any) -> None:
+        """Queue one equalizer push from any thread; coalesces automatically.
+
+        The worker sleeps, then sends *the latest* profile - so twenty drag
+        callbacks inside one interval collapse into a single CLI invocation
+        carrying only the final curve. One pending flag keeps memory flat no
+        matter how frantic the dragging gets.
+        """
+        self._latest_live_profile = profile
+        self._live_pending.set()
+        worker = self._live_worker
+        if worker is None or not worker.is_alive():
+            with self._live_lock:
+                if self._live_worker is None or not self._live_worker.is_alive():
+                    self._live_stop.clear()
+                    self._live_worker = threading.Thread(
+                        target=self._live_loop, name="fxsound-live", daemon=True)
+                    self._live_worker.start()
+
+    def stop_live_push(self) -> None:
+        self._live_stop.set()
+        self._live_pending.set()
+
+    def _live_loop(self) -> None:
+        while not self._live_stop.is_set():
+            if not self._live_pending.wait(timeout=0.5):
+                continue
+            self._live_pending.clear()
+            if self._live_stop.is_set():
+                return
+            # Sleep first, *then* read the profile: whatever arrived during
+            # the window is the curve the user last saw, so the newest state
+            # wins and earlier drag positions are never sent.
+            time.sleep(self.LIVE_PUSH_INTERVAL)
+            if self._live_stop.is_set():
+                return
+            profile = self._latest_live_profile
+            if profile is None:
+                continue
+            self._live_pending.clear()
+            try:
+                self.apply_equalizer_once(profile)
+            except Exception:
+                log.exception("Live equalizer push failed")

@@ -17,7 +17,7 @@ from ..protocol import (
     TARGET_ADAPTER_MODEL, TARGET_HEADSET_MARKING, TARGET_HEADSET_MODEL,
     TARGET_PID, TARGET_VID,
 )
-from .theme import ABYSS, FAINT, ICE, MUTED, PANEL, PAPER, fonts
+from .theme import ABYSS, FAINT, GOLD, MUTED, PANEL, PAPER, fonts
 from .widgets import Banner, Card, ScrollFrame
 
 
@@ -84,6 +84,12 @@ class SettingsView(tk.Frame):
             behaviour.body, "Notify about audio processing",
             "Show a Windows notification when audio processing starts or "
             "reports a problem.",
+        )
+        self._force_windows_toasts = self._checkbox(
+            behaviour.body, "Always use Windows notifications",
+            "Deliver every toast through Windows, even while the Hub window is "
+            "visible. Off, connect and battery news appears as a small card in "
+            "the screen's corner; on, it always arrives as a Windows toast.",
         )
         self._show_raw = self._checkbox(
             behaviour.body, "Show raw report bytes",
@@ -155,7 +161,7 @@ class SettingsView(tk.Frame):
         tk.Label(config_card.body, text="Settings and bindings are saved to",
                  bg=PANEL, fg=MUTED, font=font.small, anchor="w").pack(fill="x")
         path_label = tk.Label(
-            config_card.body, text=str(config_path()), bg=PANEL, fg=ICE,
+            config_card.body, text=str(config_path()), bg=PANEL, fg=GOLD,
             font=font.code_small, anchor="w", justify="left", wraplength=320,
         )
         path_label.pack(fill="x", pady=(3, 12))
@@ -234,6 +240,7 @@ class SettingsView(tk.Frame):
         self._notify_connection.set(settings.notify_connection)
         self._notify_volume.set(settings.notify_volume)
         self._notify_audio.set(settings.notify_audio)
+        self._force_windows_toasts.set(settings.force_windows_toasts)
         self._settle.set(str(int(settings.settle_seconds * 1000)))
         self._debounce.set(str(int(settings.debounce_seconds * 1000)))
         self._resync.set(str(settings.resync_threshold))
@@ -263,5 +270,6 @@ class SettingsView(tk.Frame):
             notify_connection=self._notify_connection.get(),
             notify_volume=self._notify_volume.get(),
             notify_audio=self._notify_audio.get(),
+            force_windows_toasts=self._force_windows_toasts.get(),
         ).clamped()
         self._on_changed(updated)

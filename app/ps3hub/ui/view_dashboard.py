@@ -13,7 +13,7 @@ from ..mappings import Profile
 from ..protocol import TARGET_ADAPTER_MODEL, TARGET_HEADSET_MODEL
 from ..state import logical_to_percent, raw_to_logical
 from .theme import (
-    ABYSS, FAINT, FAULT, ICE, IDLE, LIVE, MUTED, PANEL, PAPER, RIDGE, WARN, fonts,
+    ABYSS, FAINT, FAULT, GOLD, IDLE, LIVE, MUTED, PANEL, PAPER, RIDGE, WARN, fonts,
 )
 from .widgets import (
     BalanceBar, BatteryGauge, Banner, Card, KeyValue, ScrollFrame, StatusPill,
@@ -160,7 +160,7 @@ class DashboardView(tk.Frame):
                 self._balance.set(snapshot.chat_balance)
                 self._vss_pill.set(
                     "Surround on" if snapshot.vss else "Surround off",
-                    ICE if snapshot.vss else IDLE,
+                    GOLD if snapshot.vss else IDLE,
                 )
                 self._mic_pill.set(
                     "Mic muted" if snapshot.mic_muted else "Mic live",
@@ -202,7 +202,7 @@ class DashboardView(tk.Frame):
             self._balance.set(snapshot.chat_balance)
             self._vss_pill.set(
                 "Surround on" if snapshot.vss else "Surround off",
-                ICE if snapshot.vss else IDLE,
+                GOLD if snapshot.vss else IDLE,
             )
             self._mic_pill.set(
                 "Mic muted" if snapshot.mic_muted else "Mic live",
@@ -317,7 +317,7 @@ class DashboardView(tk.Frame):
             tk.Label(row, text=label, bg=PANEL, fg=PAPER, font=font.strong,
                      anchor="w").pack(side="left", padx=(8, 0))
             tk.Label(row, text=outcome, bg=PANEL,
-                     fg=ICE if outcome != "not bound" else FAINT,
+                     fg=GOLD if outcome != "not bound" else FAINT,
                      font=font.small, anchor="e").pack(side="right")
             self._feed_rows.append(row)
 
@@ -354,5 +354,5 @@ class DashboardView(tk.Frame):
             tk.Label(cell, text=describe_input(mapping.input_id).label, bg=PANEL,
                      fg=PAPER, font=font.strong, anchor="w", width=20).pack(side="left")
             tk.Label(cell, text="→", bg=PANEL, fg=RIDGE, font=font.base).pack(side="left")
-            tk.Label(cell, text=mapping.action_label, bg=PANEL, fg=ICE,
+            tk.Label(cell, text=mapping.action_label, bg=PANEL, fg=GOLD,
                      font=font.base, anchor="w").pack(side="left", padx=(8, 0))

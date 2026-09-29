@@ -27,13 +27,15 @@ from ..config import AppConfig, ConfigStore, Settings
 from ..device import EventType, HeadsetService, ServiceEvent
 from ..inputs import InputEvent, InputId
 from ..mappings import Profile
-from ..notify import DesktopNotifier
+from ..tray import (
+    TrayManager, format_tray_status, tray_icon_kind,
+)
 from ..notify_service import NotificationService
-from ..tray import TrayManager, format_tray_status
 from .theme import (
-    ABYSS, DECK, FAINT, FAULT, ICE, IDLE, LIVE, MUTED, PANEL, PAPER, RIDGE,
+    ABYSS, DECK, FAINT, FAULT, GOLD, IDLE, LIVE, MUTED, PANEL, PAPER, RIDGE,
     WARN, apply, fonts,
 )
+from .toast import ToastCenter
 from .view_audio import AudioView
 from .view_dashboard import DashboardView
 from .view_diagnostics import DiagnosticsView
@@ -122,13 +124,19 @@ class HubApp(tk.Tk):
             low_battery_threshold=self._config.settings.low_battery_threshold,
         )
 
-        # Windows toasts: one for the low-battery warning, one per executed
-        # binding. Both can be turned off in Settings.
-        self._notifier = DesktopNotifier(APP_NAME)
+        # Toasts: one center for every user-facing notification. The
+        # in-app overlay serves the news while the window is visible; a
+        # Windows toast takes over when it is hidden or minimised - or
+        # always, when Settings forces it.
+        self._notifier = ToastCenter(self, APP_NAME)
+        self._notifier.set_force_windows(
+            bool(getattr(self._config.settings, "force_windows_toasts", False)))
 
         # Event-driven notifications: the dispatch thread publishes logical
         # state changes on the bus; the service decides what deserves a toast.
-        self._notify_service = NotificationService(self._notifier)
+        # Clicking a connection or battery toast opens the Hub.
+        self._notify_service = NotificationService(
+            self._notifier, on_click=self._bring_to_front)
         self._notify_service.attach(app_event_bus)
         self._notify_service.apply_settings(
             connection=self._config.settings.notify_connection,
@@ -160,6 +168,11 @@ class HubApp(tk.Tk):
                 status_provider=lambda: format_tray_status(
                     _TrayStateView(self._service.snapshot(),
                                    self._service.headset_state())
+                ),
+                icon_kind_provider=lambda: tray_icon_kind(
+                    self._service.headset_state().linked,
+                    self._service.headset_state().battery_percent,
+                    self._service.headset_state().charging,
                 ),
                 on_open=lambda: self._ui_requests.put(self._bring_to_front),
                 on_hide=lambda: self._ui_requests.put(self._hide_to_tray),
@@ -370,11 +383,12 @@ class HubApp(tk.Tk):
             action_label = mapping.action_label
         ok = self._runner.run(action_id, params, repeat=event.repeat)
         if ok and self._config.settings.action_toast:
-            # DesktopNotifier queues the work, so this stays cheap here.
+            # ToastCenter queues the work, so this stays cheap here.
             self._notifier.show(
                 "Shortcut executed",
                 f"{event} → {action_label}",
                 "info",
+                on_click=self._bring_to_front,
             )
 
     def _test_action(self, action_id: str, params: dict[str, Any]) -> None:
@@ -391,6 +405,7 @@ class HubApp(tk.Tk):
         self._ui_requests.put(self._bring_to_front)
 
     def _bring_to_front(self) -> None:
+        """Raise the window. Safe as a toast click callback from any thread."""
         try:
             self.deiconify()
             self.state("normal")
@@ -491,6 +506,7 @@ class HubApp(tk.Tk):
                         "Put the headset on charge."
                     ),
                     "warn",
+                    on_click=self._bring_to_front,
                 )
 
     def _refresh(self) -> None:
@@ -508,7 +524,7 @@ class HubApp(tk.Tk):
         elif not state.receiver_present:
             self._rail_pill.set("No receiver", IDLE)
         elif state.headset_linked and not state.status_stale:
-            self._rail_pill.set("Connected", LIVE)
+            self._rail_pill.set("Connected", GOLD)
         elif state.headset_linked:
             self._rail_pill.set("Idle", WARN)
         elif state.snapshot is None:
@@ -569,6 +585,9 @@ class HubApp(tk.Tk):
             volume=settings.notify_volume,
             audio=settings.notify_audio,
         )
+        # Windows toasts can be forced even while the window is visible.
+        if hasattr(self._notifier, "set_force_windows"):
+            self._notifier.set_force_windows(settings.force_windows_toasts)
         self._service.configure_detection(
             settings.settle_seconds, settings.debounce_seconds,
             settings.resync_threshold, settings.low_battery_threshold,

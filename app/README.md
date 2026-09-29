@@ -155,6 +155,20 @@ that application through its documented command-line interface (`--power`,
 bundled, not linked and not copied; the integration only sends CLI commands to
 an installation the user already has, and the Hub works fully without it.
 
+The FxSound features on the Audio page are gated on the application actually
+running. When FxSound is installed but stopped, using one of those features
+asks whether to start it now (and the card offers a **Start FxSound**
+button); when it is not installed at all, the Hub says so and links to the
+[official download page](https://www.fxsound.com/download). The Hub never
+starts or downloads anything unattended.
+
+Before any FxSound feature is used - and whenever the Audio page opens while
+FxSound is already running - the Hub loads **all** of the application's
+presets (built-in and user) and mirrors its live equalizer, effect levels and
+selected preset into the active profile, so the Hub edits the same exact
+configuration FxSound is running rather than a stale copy. **Sync from
+FxSound now** re-reads it on demand.
+
 ---
 
 ## The equalizer
@@ -174,7 +188,11 @@ Whichever processor is active applies the curve. With FxSound as the backend
 the Hub sends the band gains through the documented CLI
 (`--set_band_gain`, `--set_band_freq`, `--num_bands`, `--filter_q`,
 `--volume_leveling`, `--balance`), so the EQ runs on FxSound's own drivers and
-DSP rather than a reimplementation of it. With the Hub's own loopback engine
+DSP rather than a reimplementation of it. Dragging a point is heard live:
+the curve is pushed to FxSound as it moves, coalesced into at most one CLI
+invocation per 120 ms on a background thread, and a focus guard restores the
+foreground window afterwards so FxSound never raises itself over the user's
+work. With the Hub's own loopback engine
 the same curve is applied as one peaking biquad per non-flat band, which the
 test suite measures: a +6 dB band comes out **+6.00 dB** at its own centre
 frequency, and **0.07 dB** away from it.
@@ -189,7 +207,8 @@ presets are the same thing:
 * **Export .fac…** writes the current curve out as a preset file.
 * **Load** applies the preset selected in the dropdown to the running
   application, then reads the result back so the graph shows what was actually
-  applied rather than what was requested.
+  applied rather than what was requested. The dropdown lists every preset
+  FxSound reports, built-in and user-defined.
 * **Save as…** stores the running settings as a new FxSound user preset.
 
 Loading `Extreme Bass.fac` and exporting it again produces a **byte-identical**

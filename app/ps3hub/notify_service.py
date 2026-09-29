@@ -2,9 +2,10 @@
 
 Sits between the event bus and the toast sender. The rules engine
 (:mod:`ps3hub.notify_rules`) decides *whether* an event is worth interrupting
-the user for; :class:`ps3hub.notify.DesktopNotifier` handles *how* the toast
-is shown. This module owns the policy object, feeds it the authoritative
-logical state, and turns an allowed :class:`~ps3hub.notify_rules.Toast` into a
+the user for; the notifier - :class:`ps3hub.notify.DesktopNotifier` or the
+toast center in :mod:`ps3hub.ui.toast` - handles *how* the toast is shown.
+This module owns the policy object, feeds it the authoritative logical
+state, and turns an allowed :class:`~ps3hub.notify_rules.Toast` into a
 queued notification.
 
 Wiring lives in one place so the anti-spam behaviour is auditable:
@@ -21,7 +22,7 @@ dispatch thread, so subscribers stay cheap: a dict lookup and one queue put.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from .applog import get_logger
 from .events import AppEvent, Event
@@ -34,11 +35,19 @@ log = get_logger("notify.service")
 class NotificationService:
     """Subscribes to the event bus and shows toasts the rules allow."""
 
-    def __init__(self, notifier: DesktopNotifier, event_bus: Any = None,
-                 rules: NotificationRules | None = None) -> None:
+    def __init__(self, notifier: Any, event_bus: Any = None,
+                 rules: NotificationRules | None = None,
+                 on_click: Callable[[], None] | None = None) -> None:
+        """Take any notifier with a ``show(title, body, level, on_click=...)``.
+
+        That covers both the legacy :class:`~ps3hub.notify.DesktopNotifier`
+        and the new :class:`~ps3hub.ui.toast.ToastCenter`, so tests and
+        alternate front-ends can inject either.
+        """
         self._notifier = notifier
         self._bus = event_bus
         self.rules = rules or NotificationRules()
+        self._on_click = on_click
         self.allowed = 0
         self.suppressed = 0
         self.shown = 0
@@ -76,5 +85,11 @@ class NotificationService:
             self.suppressed += 1
             return
         self.allowed += 1
-        if self._notifier.show(toast.title, toast.body, toast.level):
+        try:
+            delivered = self._notifier.show(
+                toast.title, toast.body, toast.level, on_click=self._on_click)
+        except TypeError:
+            # A notifier without the on_click keyword (the legacy sender).
+            delivered = self._notifier.show(toast.title, toast.body, toast.level)
+        if delivered:
             self.shown += 1

@@ -22,7 +22,7 @@ import tkinter as tk
 from typing import Callable
 
 from .theme import (
-    FAINT, ICE, ICE_DEEP, IDLE, LIVE, MUTED, PANEL, PAPER, RIDGE, fonts,
+    FAINT, GOLD, GOLD_DEEP, IDLE, MUTED, PANEL, PAPER, RIDGE, fonts,
 )
 
 #: Boost/cut limits, matching the FxSound CLI and the DSP.
@@ -130,7 +130,7 @@ class EQGraph(tk.Canvas):
         def y_for(db: float) -> float:
             return top + (GAIN_MAX_DB - db) / (GAIN_MAX_DB - GAIN_MIN_DB) * span
 
-        colour = ICE if self._enabled else IDLE
+        colour = GOLD if self._enabled else IDLE
         muted = MUTED if self._enabled else FAINT
 
         # Horizontal reference lines at 0 dB and the limits.
@@ -160,7 +160,7 @@ class EQGraph(tk.Canvas):
             # Filled area under the curve, then the curve itself on top.
             polygon = points + [(points[-1][0], y_for(0.0)),
                                 (points[0][0], y_for(0.0))]
-            self.create_polygon(polygon, fill=ICE_DEEP, outline="")
+            self.create_polygon(polygon, fill=GOLD_DEEP, outline="")
             self.create_line(points, fill=colour, width=2, smooth=False)
 
         # Handles last so they sit above the fill and stay grabbable.

@@ -1,10 +1,12 @@
 """Visual language.
 
-The palette comes from the PlayStation 3 XMB the headset was built for: a deep
-navy field rather than grey, thin light type at large sizes, and one cool
-accent. Colour is never the only carrier of meaning - every state that uses
-colour also carries a word, so the interface stays readable for anyone who
-cannot separate the greens from the ambers.
+The palette is a black-and-gold control room: near-black slate surfaces, a
+light gray for text, and one gold accent. The gold is deliberately scarce -
+it marks *active* states only (accent buttons, toggles, selections, progress
+fills, the text caret), so a glance at where it appears tells you where the
+action is. Cards, rails and separators stay calm slate tones, and state
+pills carry a word as well as a colour, so the interface stays readable for
+anyone who cannot separate the golds from the ambers.
 """
 
 from __future__ import annotations
@@ -14,26 +16,26 @@ from tkinter import ttk
 
 # ---------------------------------------------------------------- palette --
 
-ABYSS = "#050D14"      # window background, deepest layer
-DECK = "#0B1922"       # navigation rail
-PANEL = "#102532"      # card surface
-PANEL_HI = "#16303F"   # hovered / selected surface
-RIDGE = "#1E3B4B"      # hairlines and borders
+ABYSS = "#0A0B0D"      # window background, deepest layer
+DECK = "#101216"       # navigation rail
+PANEL = "#16181D"      # card surface
+PANEL_HI = "#2A2F38"   # hovered / selected surface
+RIDGE = "#232830"      # hairlines and borders
 
-ICE = "#6FC9EE"        # the single accent
-ICE_DEEP = "#2C6A88"
-ICE_WASH = "#14303E"
+GOLD = "#CFAE3D"       # the single accent: active states only
+GOLD_DEEP = "#8A7426"  # pressed / filled bases of the accent
+GOLD_WASH = "#33301F"  # the faintest gold tint, for washes
 
-PAPER = "#E6F0F5"      # primary text
-MUTED = "#7F98A6"      # secondary text
-FAINT = "#4E6674"      # disabled text
+PAPER = "#DEE3EA"      # primary text (a bright tint of the palette gray)
+MUTED = "#AEB6C2"      # secondary text: the palette's light gray
+FAINT = "#6B7480"      # disabled text
 
-LIVE = "#5BD196"       # connected, healthy
+LIVE = "#CFAE3D"       # connected, healthy, active
 WARN = "#EFB34A"       # attention
 FAULT = "#EF6B6E"      # error
-IDLE = "#3C5666"       # off, unknown
+IDLE = "#55606E"       # off, unknown
 
-SELECTION = "#1D4457"
+SELECTION = "#3A3524"  # selected rows: a slate surface with gold in it
 
 # ------------------------------------------------------------------- type --
 
@@ -61,8 +63,10 @@ class Fonts:
         self.light = _pick(_PREFERRED_LIGHT, available, self.body)
         self.mono = _pick(_PREFERRED_MONO, available, "TkFixedFont")
 
-        # A restrained scale. Display sizes use the light weight, the way the
-        # XMB set its large type.
+        # A restrained scale. Display sizes use the light weight, and body
+        # text sits on the light gray at a readable weight: on surfaces this
+        # dark, a heavier weight at the same size strains less than a
+        # brighter colour would.
         self.display = (self.light, 34)
         self.headline = (self.light, 22)
         self.title = (self.body, 14, "bold")
@@ -71,6 +75,9 @@ class Fonts:
         self.strong = (self.body, 10, "bold")
         self.small = (self.body, 9)
         self.tiny = (self.body, 8)
+        # The palette's light gray reads best on these dark surfaces with a
+        # little more weight than plain body text.
+        self.muted = (self.body, 9)
         self.readout = (self.light, 27)
         self.code = (self.mono, 9)
         self.code_small = (self.mono, 8)
@@ -125,8 +132,8 @@ def apply(root) -> ttk.Style:
                     font=font.headline)
     style.configure("Readout.TLabel", background=PANEL, foreground=PAPER,
                     font=font.readout)
-    style.configure("Code.TLabel", background=PANEL, foreground=ICE, font=font.code)
-    style.configure("Accent.TLabel", background=PANEL, foreground=ICE, font=font.strong)
+    style.configure("Code.TLabel", background=PANEL, foreground=GOLD, font=font.code)
+    style.configure("Accent.TLabel", background=PANEL, foreground=GOLD, font=font.strong)
     style.configure("Warn.TLabel", background=PANEL, foreground=WARN, font=font.small)
     style.configure("Fault.TLabel", background=PANEL, foreground=FAULT, font=font.small)
 
@@ -134,14 +141,15 @@ def apply(root) -> ttk.Style:
     style.configure("TButton", background=PANEL_HI, foreground=PAPER,
                     font=font.base, padding=(14, 7), relief="flat", borderwidth=0)
     style.map("TButton",
-              background=[("pressed", ICE_DEEP), ("active", RIDGE),
+              background=[("pressed", "#333A45"), ("active", "#242932"),
                           ("disabled", PANEL)],
               foreground=[("disabled", FAINT)])
 
-    style.configure("Accent.TButton", background=ICE_DEEP, foreground=PAPER,
+    # The accent button is one of the few places the gold shows at all.
+    style.configure("Accent.TButton", background=GOLD, foreground="#0A0B0D",
                     font=font.strong, padding=(16, 8))
     style.map("Accent.TButton",
-              background=[("pressed", ICE_WASH), ("active", "#37809F"),
+              background=[("pressed", GOLD_DEEP), ("active", "#DFC155"),
                           ("disabled", PANEL_HI)],
               foreground=[("disabled", FAINT)])
 
@@ -157,26 +165,32 @@ def apply(root) -> ttk.Style:
 
     # Inputs ----------------------------------------------------------------
     style.configure("TEntry", fieldbackground=DECK, foreground=PAPER,
-                    insertcolor=ICE, borderwidth=1, relief="flat", padding=6)
-    style.map("TEntry", bordercolor=[("focus", ICE)],
-              lightcolor=[("focus", ICE)], darkcolor=[("focus", ICE)])
+                    insertcolor=GOLD, borderwidth=1, relief="flat", padding=6)
+    style.map("TEntry", bordercolor=[("focus", GOLD)],
+              lightcolor=[("focus", GOLD)], darkcolor=[("focus", GOLD)])
 
     style.configure("TCombobox", fieldbackground=DECK, background=DECK,
-                    foreground=PAPER, arrowcolor=ICE, borderwidth=1, padding=5)
+                    foreground=PAPER, arrowcolor=MUTED, borderwidth=1, padding=5)
     style.map("TCombobox",
               fieldbackground=[("readonly", DECK)],
               foreground=[("disabled", FAINT)],
-              bordercolor=[("focus", ICE)])
+              bordercolor=[("focus", GOLD), ("!focus", RIDGE)])
 
     style.configure("TCheckbutton", background=PANEL, foreground=PAPER,
                     font=font.base, focuscolor=PANEL)
     style.map("TCheckbutton",
               background=[("active", PANEL)],
               foreground=[("disabled", FAINT)],
-              indicatorcolor=[("selected", ICE), ("!selected", RIDGE)])
+              indicatorcolor=[("selected", GOLD), ("!selected", RIDGE),
+                              ("pressed", GOLD_DEEP)])
 
     style.configure("TSpinbox", fieldbackground=DECK, foreground=PAPER,
-                    arrowcolor=ICE, borderwidth=1, padding=5)
+                    arrowcolor=MUTED, borderwidth=1, padding=5)
+    style.map("TSpinbox", bordercolor=[("focus", GOLD), ("!focus", RIDGE)])
+
+    # Horizontal variants used by ttk.Scale on the Audio page.
+    style.configure("Horizontal.TScale", background=PANEL, troughcolor=DECK,
+                    bordercolor=PANEL, lightcolor=DECK, darkcolor=DECK)
 
     style.configure("TSeparator", background=RIDGE)
 

@@ -547,14 +547,47 @@ class _MirrorEngine:
 
 @contextmanager
 def _mirror_view(engine):
+    """An AudioView on a **shared** Tk root.
+
+    Creating and destroying many Tk roots in one process breaks this
+    platform's Tcl library intermittently, so every Tk-backed test in this
+    module reuses one withdrawn root; only the view widget is torn down.
+    """
     from ps3hub.ui.view_audio import AudioView
 
-    root = tk.Tk()
-    root.withdraw()
+    root = _shared_root()
+    view = AudioView(root, engine_provider=lambda: engine, on_changed=lambda: None)
     try:
-        yield AudioView(root, engine_provider=lambda: engine, on_changed=lambda: None)
+        yield view
     finally:
-        root.destroy()
+        try:
+            view.destroy()
+        except tk.TclError:
+            pass
+
+
+_MIRROR_ROOT = None
+
+
+def _shared_root():
+    """One Tk root for the whole test session (created lazily)."""
+    global _MIRROR_ROOT
+    if _MIRROR_ROOT is None:
+        _MIRROR_ROOT = tk.Tk()
+        _MIRROR_ROOT.withdraw()
+        import atexit
+
+        def _close():
+            global _MIRROR_ROOT
+            try:
+                if _MIRROR_ROOT is not None:
+                    _MIRROR_ROOT.destroy()
+            except tk.TclError:
+                pass
+            _MIRROR_ROOT = None
+
+        atexit.register(_close)
+    return _MIRROR_ROOT
 
 
 def test_view_poll_mirrors_an_external_status_change():
@@ -683,29 +716,31 @@ def test_settings_round_trip_keeps_force_windows_toasts(tmp_path):
         __import__("ps3hub.config", fromlist=["Settings"]).Settings().force_windows_toasts
 
 
-def test_toast_center_forces_the_windows_route(tmp_path):
-    import tkinter as tk
+def test_toast_center_forces_the_windows_route():
     from ps3hub.ui.toast import ToastCenter
 
-    root = tk.Tk()
-    root.withdraw()
+    root = _shared_root()
+    center = ToastCenter(root, "Hub")
     try:
-        center = ToastCenter(root, "Hub")
         center.set_force_windows(True)
         root.deiconify()
         root.update()
-        center.show("Forced", "windows even while visible", "ok")
-        # Delivery happens on the pump's timer; pump events by hand, since
-        # a mainloop here clashes with the Tk roots other tests created.
-        deadline = time.monotonic() + 0.5
-        while time.monotonic() < deadline and center.windows_shown == 0:
-            root.update()
-            time.sleep(0.01)
+        # Deliver synchronously (this is the exact method the pump's timer
+        # invokes), so the assertion cannot flake on scheduler latency.
+        center._deliver("Forced", "windows even while visible", "ok", None)
         assert center.windows_shown == 1
         assert center.in_app_shown == 0
-        center.shutdown()
+        # And the default route: visible window, not forced -> in-app card.
+        center.set_force_windows(False)
+        center._deliver("Local", "on the visible window", "ok", None)
+        assert center.in_app_shown == 1
+        assert center.windows_shown == 1
     finally:
-        root.destroy()
+        center.shutdown()
+        try:
+            root.withdraw()
+        except tk.TclError:
+            pass
 
 
 # ----------------------------------------------------- live equalizer push ---
@@ -804,3 +839,44 @@ def test_stop_live_push_halts_the_worker():
     backend.request_live_push(AudioProfile())
     backend.stop_live_push()
     assert backend._live_stop.is_set()
+
+
+def test_view_poll_ignores_push_echoes_and_flat_snapshots():
+    from ps3hub.ui.view_audio import AudioView
+
+    flat = _MirrorStatus(equalizer={
+        "num_bands": 10, "master_gain": 0.0,
+        "bands": [{"frequency": 100.0 * (i + 1), "gain": 0.0}
+                  for i in range(10)]})
+    external = _MirrorStatus(
+        effects={"bass": 6.0},
+        equalizer={"num_bands": 10, "master_gain": 2.0,
+                   "bands": [{"frequency": 100.0 * (i + 1), "gain": 3.0}
+                             for i in range(10)]},
+        selected_preset="Game")
+    engine = _MirrorEngine([flat, flat, external],
+                           [(1, 10), (2, 12), (3, 14), (4, 16)])
+    with _mirror_view(engine) as view:
+        view._fx_ui_enabled = True
+        view._mirror_stamp = (0, 9)
+        view._fxsig = view._fx_signature(_MirrorStatus())
+        # A push just happened: the echo window is open and this is the
+        # fingerprint of what we pushed (a shaped curve).
+        view._user_edit_until = time.monotonic() + 10
+        view._pushed_fxsig = view._fx_signature(_MirrorStatus(
+            equalizer={"num_bands": 10,
+                       "bands": [{"frequency": 100.0 * (i + 1), "gain": 3.0}
+                                 for i in range(10)]}))
+        view._pushed_not_flat = True
+
+        # 1. A rewrite inside the echo window is ignored outright.
+        view._poll_status_file()
+        assert engine.adopted == []
+        # 2. A flat snapshot after the window is the app's transient state,
+        #    not a user action: still ignored.
+        view._user_edit_until = time.monotonic() - 1
+        view._poll_status_file()
+        assert engine.adopted == []
+        # 3. A genuinely different external state is adopted normally.
+        view._poll_status_file()
+        assert engine.adopted == [external]

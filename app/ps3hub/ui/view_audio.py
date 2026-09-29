@@ -19,6 +19,7 @@ facade; no COM, no HID and no thread ownership leaks into the view.
 
 from __future__ import annotations
 
+import time
 import tkinter as tk
 from dataclasses import replace as dataclass_replace
 from tkinter import messagebox as tkmessagebox
@@ -31,6 +32,40 @@ from .widget_eq import BAND_COUNTS, EQGraph
 from .widgets import Banner, Card, KeyValue, ScrollFrame, StatusPill
 
 log = get_logger("ui.audio")
+
+
+class _ProfileEcho:
+    """Presents a profile as enough of a status for ``AudioView._fx_signature``.
+
+    Used to fingerprint what the Hub just pushed to FxSound, so a rewrite of
+    status.json that merely echoes the push is recognised and never mirrored
+    back over the curve being edited.
+    """
+
+    def __init__(self, profile) -> None:
+        from ..audio.fac import default_band_frequencies
+        count = int(getattr(profile, "eq_bands", 10) or 10)
+        bands = [dict(frequency=float(f), gain=float(g))
+                 for f, g in (getattr(profile, "eq", []) or [])][:count]
+        if not bands:
+            bands = [dict(frequency=float(f), gain=0.0)
+                     for f in default_band_frequencies(count)]
+        self.effects = {
+            "bass": float(getattr(profile, "bass", 0.0)),
+            "clarity": float(getattr(profile, "clarity", 0.0)),
+            "ambience": float(getattr(profile, "ambience", 0.0)),
+            "surround": float(getattr(profile, "surround", 0.0)),
+            "dynamic_boost": float(getattr(profile, "dynamic_boost", 0.0)),
+        }
+        self.equalizer = {
+            "num_bands": count,
+            "master_gain": float(getattr(profile, "master_gain_db", 0.0)),
+            "volume_leveling": float(getattr(profile, "volume_leveling_db", 0.0)),
+            "filter_q": float(getattr(profile, "filter_q", 1.0)),
+            "balance": float(getattr(profile, "balance_db", 0.0)),
+            "bands": bands,
+        }
+        self.selected_preset = getattr(profile, "preset_name", "") or ""
 
 
 class AudioView(tk.Frame):
@@ -57,6 +92,14 @@ class AudioView(tk.Frame):
         # echo of a push we just made".
         self._mirror_stamp: tuple[int, int] | None = None
         self._fxsig: tuple | None = None
+        # Push bookkeeping. Everything FxSound writes while (or just after)
+        # the Hub pushes a curve is an echo, not an independent change; the
+        # reported symptom of the equalizer "snapping back to zero" was the
+        # mirror adopting the application's mid-apply snapshot over the
+        # user's edits. These fields make the poll ignore that window.
+        self._user_edit_until = 0.0
+        self._pushed_fxsig: tuple | None = None
+        self._pushed_not_flat = False
         self._build()
         self.refresh()
 
@@ -427,7 +470,6 @@ class AudioView(tk.Frame):
             round(float(eq.get("balance", 0.0) or 0.0), 2),
             bands,
             str(getattr(status, "selected_preset", "") or ""),
-            str(getattr(status, "selected_output", "") or ""),
         )
 
     def _safe_stamp(self, engine) -> tuple[int, int] | None:
@@ -468,7 +510,23 @@ class AudioView(tk.Frame):
         if not getattr(status, "running", False):
             self._render_fxsound(status)
             return
-        if self._fx_signature(status) == self._fxsig:
+        if time.monotonic() < self._user_edit_until:
+            # Our own push (or the user's edit) is still settling. Anything
+            # the application writes in this window is our echo or a
+            # mid-apply snapshot - never an independent change.
+            return
+        signature = self._fx_signature(status)
+        if signature == self._pushed_fxsig or signature == self._fxsig:
+            # The settled echo of what we pushed, or state already mirrored.
+            self._fxsig = signature
+            return
+        bands = (getattr(status, "equalizer", {}) or {}).get("bands") or []
+        gains = [abs(float(b.get("gain", 0.0))) for b in bands]
+        if self._pushed_not_flat and gains and all(g < 0.05 for g in gains):
+            # A flat snapshot right after we pushed a shaped curve is the
+            # application's transient state, not a user action. Real
+            # flattening done inside FxSound is picked up by "Sync from
+            # FxSound now", which bypasses this guard deliberately.
             return
         # FxSound changed its own state (a preset, the app's sliders, the
         # output device): pull the whole thing in again.
@@ -654,6 +712,11 @@ class AudioView(tk.Frame):
         push = getattr(engine, "fxsound_request_live_push", None)
         if callable(push):
             push(profile)
+            # Open the echo-suppression window around this push.
+            self._user_edit_until = time.monotonic() + 3.0
+            self._pushed_fxsig = self._fx_signature(_ProfileEcho(profile))
+            gains = [g for _f, g in (profile.eq or [])]
+            self._pushed_not_flat = any(abs(g) >= 0.05 for g in gains)
 
     def _on_reset_eq(self) -> None:
         _, profile = self._active_profile()

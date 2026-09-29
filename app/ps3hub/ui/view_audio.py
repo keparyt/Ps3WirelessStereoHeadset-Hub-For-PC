@@ -624,6 +624,8 @@ class AudioView(tk.Frame):
         )
         engine.set_profile(profile)
         self._on_changed()
+        # The five effect sliders go out on the same live path as the EQ.
+        self._request_live_push()
 
     def _on_reset_profile(self) -> None:
         engine = self._engine_provider()
@@ -712,9 +714,17 @@ class AudioView(tk.Frame):
         push = getattr(engine, "fxsound_request_live_push", None)
         if callable(push):
             push(profile)
-            # Open the echo-suppression window around this push.
+            # Open the echo-suppression window around this push. The echo
+            # fingerprint carries the effect levels FxSound last reported:
+            # the push does not touch them, so the settled status.json will
+            # still hold the application's own values, and matching on them
+            # keeps the settled echo from reading as an external change.
+            echo = _ProfileEcho(profile)
+            live_effects = getattr(self._last_fx_status, "effects", None)
+            if live_effects:
+                echo.effects = dict(live_effects)
             self._user_edit_until = time.monotonic() + 3.0
-            self._pushed_fxsig = self._fx_signature(_ProfileEcho(profile))
+            self._pushed_fxsig = self._fx_signature(echo)
             gains = [g for _f, g in (profile.eq or [])]
             self._pushed_not_flat = any(abs(g) >= 0.05 for g in gains)
 

@@ -771,6 +771,11 @@ def test_apply_equalizer_once_is_a_single_invocation(monkeypatch):
     assert "--filter_q=1.5" in line
     assert "--volume_leveling=1.0" in line
     assert "--balance=-2.0" in line
+    # Effect levels ride the same invocation so the five sliders are live
+    # (this profile carries the dataclass defaults bass=5, surround=4).
+    assert "--set_effect=" in line
+    assert "bass:5.00" in line and "surround:4.00" in line
+    assert "fidelity:0.00" in line and "dynamicboost:0.00" in line
 
 
 def test_request_live_push_coalesces_into_one_send(monkeypatch):
@@ -839,6 +844,23 @@ def test_stop_live_push_halts_the_worker():
     backend.request_live_push(AudioProfile())
     backend.stop_live_push()
     assert backend._live_stop.is_set()
+
+
+def test_effect_values_clamped_onto_the_live_push():
+    from unittest.mock import patch
+    from ps3hub.audio import fxsound_backend as fb
+
+    calls = []
+    with patch.object(fb.FxSoundBackend, "_send",
+                      lambda self, *a: calls.append(list(a)) or True), \
+         patch.object(fb.FxSoundBackend, "exe_path",
+                      property(lambda self: fb.Path("C:/x/fxsound.exe"))):
+        backend = fb.FxSoundBackend()
+        assert backend.apply_equalizer_once(
+            AudioProfile(bass=14.0, clarity=-2.0)) is True
+    line = " ".join(calls[0])
+    assert "bass:10.00" in line, "over-range bass must clamp to 10"
+    assert "fidelity:0.00" in line, "under-range clarity must clamp to 0"
 
 
 def test_view_poll_ignores_push_echoes_and_flat_snapshots():

@@ -639,6 +639,13 @@ class FxSoundBackend:
             f"--volume_leveling={_clamp(getattr(profile, 'volume_leveling_db', 0.0), 0.0, 4.0):.1f}")
         arguments.append(
             f"--balance={_clamp(getattr(profile, 'balance_db', 0.0), -20.0, 20.0):.1f}")
+        # Effect levels ride the same invocation so the five sliders hear
+        # their changes live too. Re-sending an unchanged value is a no-op
+        # for the application and keeps the push path uniform.
+        arguments.append("--set_effect=" + ",".join(
+            f"{name}:{_clamp(getattr(profile, name, 0.0), 0.0, 10.0):.2f}"
+            for name in ("bass", "fidelity", "ambience", "surround",
+                         "dynamicboost")))
         return self._send(*arguments)
 
     # ---------------------------------------------------------- live push --

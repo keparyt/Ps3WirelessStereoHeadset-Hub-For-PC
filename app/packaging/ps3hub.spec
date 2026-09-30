@@ -1,15 +1,19 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller specification for the PS3 Wireless Stereo Headset Hub.
 
-Build from the repository root:
+Build with the tool (recommended - it writes the version resource, verifies
+dependencies and produces a build report):
 
-    python -m pip install pyinstaller
-    pyinstaller packaging/ps3hub.spec
+    python packaging/build_exe.py            # -> <repo>/build/PS3HeadsetHub.exe
 
-The result is ``dist/PS3HeadsetHub.exe``: one windowed executable with no
-console. Anything the proof of concept printed to stdout now goes to the log
-file and the Diagnostics page instead, which is why suppressing the console is
-safe here.
+or directly:
+
+    python -m PyInstaller --distpath ../build --workpath ../build/_work \
+        packaging/ps3hub.spec
+
+The result is one windowed executable with no console. Anything the app logs
+goes to the per-subsystem files on the Diagnostics page, which is why
+suppressing the console is safe here.
 """
 
 import sys
@@ -17,7 +21,21 @@ from pathlib import Path
 
 # The spec file runs with SPECPATH set to its own directory.
 ROOT = Path(SPECPATH).parent          # noqa: F821 - injected by PyInstaller
-ICON = ROOT / "packaging" / "ps3hub.ico"
+ICON = Path(SPECPATH) / "ps3hub.ico"
+EXAMPLES = ROOT / "EQExamples"
+VERSION_FILE = Path(SPECPATH) / "version_info.txt"
+
+datas = []
+if ICON.exists():
+    # Embedded in the exe by EXE(icon=...) for Explorer, and bundled here as
+    # data so the running window can load it too.
+    datas.append((str(ICON), "."))
+if EXAMPLES.is_dir():
+    # The Audio page's example-preset row reads these at runtime; without
+    # them the dropdown is empty in the packaged app.
+    for example in sorted(EXAMPLES.glob("*")):
+        if example.suffix.lower() in (".fac", ".txt"):
+            datas.append((str(example), "EQExamples"))
 
 block_cipher = None
 
@@ -25,20 +43,27 @@ analysis = Analysis(                   # noqa: F821
     [str(ROOT / "main.py")],
     pathex=[str(ROOT)],
     binaries=[],
-    # Embedded in the exe by EXE(icon=...) for Explorer, and bundled here as
-    # data so the running window can load it too.
-    datas=[(str(ICON), ".")] if ICON.exists() else [],
+    datas=datas,
     # hidapi loads its backend lazily, so PyInstaller cannot see it by
-    # following imports alone.
-    hiddenimports=["hid"],
+    # following imports alone. ttkbootstrap's toast/icon machinery imports
+    # submodules by string at runtime for the same reason.
+    hiddenimports=[
+        "hid",
+        "ttkbootstrap.style.icons",
+        "ttkbootstrap.style.engine",
+        "ttkbootstrap.widgets.toast",
+        "ttkbootstrap.constants",
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    # Large stdlib and third-party packages this application never touches.
-    # Excluding them keeps the executable to a sensible size.
+    # Stdlib modules the application never touches. NOTE: numpy and PIL must
+    # NOT be excluded - numpy is the loopback DSP's math backend and PIL
+    # renders ttkbootstrap's toast icon glyphs; excluding either ships an exe
+    # whose audio path or toasts are silently broken.
     excludes=[
-        "numpy", "pandas", "matplotlib", "scipy", "PIL", "pytest",
-        "unittest", "pydoc", "doctest", "email", "http", "xml",
+        "pandas", "matplotlib", "scipy", "pytest",
+        "unittest", "pydoc", "doctest",
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
@@ -69,4 +94,7 @@ exe = EXE(                             # noqa: F821
     codesign_identity=None,
     entitlements_file=None,
     icon=str(ICON) if ICON.exists() else None,
+    # Windows Explorer version info, generated from ps3hub.APP_VERSION by
+    # packaging/build_exe.py. Missing file => no resource, build still works.
+    version=str(VERSION_FILE) if VERSION_FILE.exists() else None,
 )

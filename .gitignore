@@ -11,3 +11,4 @@ venv/
 poc/logs/
 poc/captures/
 captures/
+app/packaging/version_info.txt

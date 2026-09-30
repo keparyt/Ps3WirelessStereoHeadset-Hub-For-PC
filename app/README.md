@@ -63,20 +63,40 @@ python main.py
 Or just double-click **`run.bat`**, which installs the dependency if it is
 missing.
 
-To build a distributable Windows app with no Python installation required
-on the target machine:
+### Install (users, no Python needed)
+
+Grab `PS3HeadsetHub-<version>-win64.zip` from the
+[latest GitHub release](https://github.com/keparyt/Ps3WirelessStereoHeadset-Hub-For-PC/releases/latest),
+extract it anywhere, and double-click **`Install.cmd`**. The installer
+(current user only, no admin rights):
+
+* copies the app to `%LOCALAPPDATA%\PS3HeadsetHub`
+* creates Start Menu shortcuts (**PS3 Headset Hub**, **Uninstall PS3 Headset Hub**)
+* registers **start with Windows** so the Hub sits in the system tray at
+  sign-in (`install.ps1 -NoAutostart` to skip, `-DesktopShortcut` for a
+  desktop icon)
+
+Uninstall from the Start Menu entry — settings in
+`%APPDATA%\PS3HeadsetHub` are kept unless you delete that folder too.
+
+### Build (maintainers)
 
 ```powershell
 packaging\build.bat
 ```
 
 That produces a **onedir** application — `build\PS3HeadsetHub\PS3HeadsetHub.exe`
-next to its `_internal` folder (keep the two together) — plus a
-self-contained `build\PS3HeadsetHub-<version>-win64.zip` ready to share, and
-`build\build-report.txt` with the version, commit and checksums. The folder
-layout starts faster than a single-file exe and is far less likely to be
-quarantined by antivirus software. From a shell instead of the double-click:
-`python packaging/build_exe.py --clean`.
+next to its `_internal` folder (keep the two together) — the install helpers
+at `build\` root, a self-contained `build\PS3HeadsetHub-<version>-win64.zip`
+ready to share, and `build\build-report.txt` with the version, commit and
+checksums. The folder layout starts faster than a single-file exe and is far
+less likely to be quarantined by antivirus software. From a shell instead of
+the double-click: `python packaging/build_exe.py --clean`.
+
+**Releases are automated:** pushing a tag `v<version>` (e.g. `v1.2.10`,
+matching `APP_VERSION` in `app/ps3hub/__init__.py`) runs the test suite on
+GitHub Actions, builds the zip, and attaches it to a GitHub Release with
+generated notes. A tag that disagrees with `APP_VERSION` fails the release.
 
 ---
 

@@ -48,6 +48,14 @@ EXE_PATH = APP_BUNDLE / "PS3HeadsetHub.exe"
 SPEC_FILE = APP_DIR / "packaging" / "ps3hub.spec"
 VERSION_FILE = APP_DIR / "packaging" / "version_info.txt"
 EXE_NAME = "PS3HeadsetHub"
+#: Install helpers shipped at the root of the distributable zip: a user
+#: extracts, double-clicks Install.cmd, and the app lands in
+#: %LOCALAPPDATA% with shortcuts and tray autostart.
+HELPER_FILES = (
+    ("install.ps1", "install.ps1"),
+    ("Install.cmd", "Install.cmd"),
+    ("uninstall.cmd", "uninstall.cmd"),
+)
 
 #: Runtime dependencies the packaged application needs. hidapi/ttkbootstrap
 #: are hard requirements; sounddevice/numpy power the native loopback DSP
@@ -195,8 +203,19 @@ def folder_stats(bundle: Path) -> tuple[int, int]:
     return total, count
 
 
+def copy_install_helpers() -> None:
+    """Place install/uninstall helpers at the zip root, next to the folder."""
+    for source_name, target_name in HELPER_FILES:
+        source = APP_DIR / "packaging" / source_name
+        if not source.exists():
+            log(f"WARNING: install helper missing: {source}")
+            continue
+        shutil.copy2(source, BUILD_DIR / target_name)
+    log("install helpers: Install.cmd / install.ps1 / uninstall.cmd")
+
+
 def make_zip(bundle: Path, version: str) -> Path:
-    """Zip the onedir bundle into a self-contained distributable."""
+    """Zip the onedir bundle plus the install helpers into a distributable."""
     zip_path = BUILD_DIR / f"{EXE_NAME}-{version}-win64.zip"
     if zip_path.exists():
         zip_path.unlink()
@@ -205,6 +224,10 @@ def make_zip(bundle: Path, version: str) -> Path:
         for path in sorted(bundle.rglob("*")):
             if path.is_file():
                 zf.write(path, path.relative_to(bundle.parent))
+        for _source, target_name in HELPER_FILES:
+            helper = BUILD_DIR / target_name
+            if helper.exists():
+                zf.write(helper, helper.name)
     size = zip_path.stat().st_size
     log(f"zip written: {size / (1 << 20):.1f} MiB")
     return zip_path
@@ -278,9 +301,11 @@ def main(argv: list[str] | None = None) -> int:
     version_file = write_version_resource()
     run_pyinstaller(version_file)
     verify_bundle()
+    copy_install_helpers()
     zip_path = None if args.no_zip else make_zip(APP_BUNDLE, version)
     write_report(version, zip_path)
     log(f"DONE: {EXE_PATH}")
+    log("users: extract the zip and double-click Install.cmd")
     return 0
 
 

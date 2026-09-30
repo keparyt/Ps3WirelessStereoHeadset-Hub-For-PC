@@ -63,13 +63,20 @@ python main.py
 Or just double-click **`run.bat`**, which installs the dependency if it is
 missing.
 
-To build a single `.exe` with no Python installation required:
+To build a distributable Windows app with no Python installation required
+on the target machine:
 
 ```powershell
 packaging\build.bat
 ```
 
-That produces `dist\PS3HeadsetHub.exe`.
+That produces a **onedir** application — `build\PS3HeadsetHub\PS3HeadsetHub.exe`
+next to its `_internal` folder (keep the two together) — plus a
+self-contained `build\PS3HeadsetHub-<version>-win64.zip` ready to share, and
+`build\build-report.txt` with the version, commit and checksums. The folder
+layout starts faster than a single-file exe and is far less likely to be
+quarantined by antivirus software. From a shell instead of the double-click:
+`python packaging/build_exe.py --clean`.
 
 ---
 

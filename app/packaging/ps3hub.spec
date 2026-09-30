@@ -4,16 +4,19 @@
 Build with the tool (recommended - it writes the version resource, verifies
 dependencies and produces a build report):
 
-    python packaging/build_exe.py            # -> <repo>/build/PS3HeadsetHub.exe
+    python packaging/build_exe.py            # -> <repo>/build/PS3HeadsetHub/
 
 or directly:
 
     python -m PyInstaller --distpath ../build --workpath ../build/_work \
         packaging/ps3hub.spec
 
-The result is one windowed executable with no console. Anything the app logs
-goes to the per-subsystem files on the Diagnostics page, which is why
-suppressing the console is safe here.
+The result is a **onedir** application: ``PS3HeadsetHub/PS3HeadsetHub.exe``
+next to an ``_internal`` folder of libraries. A directory build starts
+faster than a one-file exe (no archive to unpack at every launch) and is far
+less likely to be quarantined by antivirus software, which is why the
+one-file layout was dropped. The app logs to the per-subsystem files on the
+Diagnostics page, so suppressing the console is safe here.
 """
 
 import sys
@@ -76,17 +79,13 @@ pyz = PYZ(analysis.pure, analysis.zipped_data, cipher=block_cipher)  # noqa: F82
 exe = EXE(                             # noqa: F821
     pyz,
     analysis.scripts,
-    analysis.binaries,
-    analysis.zipfiles,
-    analysis.datas,
     [],
+    exclude_binaries=True,             # onedir: binaries go to COLLECT
     name="PS3HeadsetHub",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    runtime_tmpdir=None,
-    # No console: this is a GUI application. Diagnostics live in the app.
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -97,4 +96,14 @@ exe = EXE(                             # noqa: F821
     # Windows Explorer version info, generated from ps3hub.APP_VERSION by
     # packaging/build_exe.py. Missing file => no resource, build still works.
     version=str(VERSION_FILE) if VERSION_FILE.exists() else None,
+)
+
+coll = COLLECT(                        # noqa: F821
+    exe,
+    analysis.binaries,
+    analysis.zipfiles,
+    analysis.datas,
+    strip=False,
+    upx=False,
+    name="PS3HeadsetHub",
 )

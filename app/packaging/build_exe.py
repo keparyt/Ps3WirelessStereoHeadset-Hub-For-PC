@@ -1,22 +1,27 @@
 #!/usr/bin/env python3
-"""Build the PS3 Wireless Stereo Headset Hub as a single Windows executable.
+"""Build the PS3 Wireless Stereo Headset Hub as a Windows **onedir** app.
 
 Usage (from anywhere):
 
-    python packaging/build_exe.py            # build into <repo>/build
-    python packaging/build_exe.py --clean    # wipe build/ first
+    python packaging/build_exe.py              # build into <repo>/build
+    python packaging/build_exe.py --clean      # wipe build/ first
+    python packaging/build_exe.py --no-zip     # skip the distributable zip
     python packaging/build_exe.py --skip-deps  # skip the dependency check
+
+Or simply double-click ``packaging\\build.bat``.
 
 Output layout (relative to the repository root):
 
-    build/PS3HeadsetHub.exe      the application, one windowed exe
-    build/build-report.txt       version, git commit, size, sha256
-    build/_work/                 PyInstaller intermediates (safe to delete)
+    build/PS3HeadsetHub/PS3HeadsetHub.exe   launch this
+    build/PS3HeadsetHub/_internal/          its libraries (keep together)
+    build/PS3HeadsetHub-<version>-win64.zip self-contained distributable
+    build/build-report.txt                  version, commit, size, sha256
+    build/_work/                            PyInstaller intermediates
 
-The exe carries the version resource from ``ps3hub.APP_VERSION`` (shown in
-Explorer's Properties dialog), the bundled EQExamples curves, and
-ttkbootstrap's icon fonts, so toasts and the Examples row work in the
-packaged application exactly as in development.
+Why onedir (instead of the previous one-file exe): the app starts
+immediately - there is no self-extraction of a 28 MiB archive to a temp
+folder on every launch - and antivirus products quarantine self-extracting
+game-style executables far more often than plain directory builds.
 """
 
 from __future__ import annotations
@@ -31,33 +36,41 @@ import shutil
 import subprocess
 import sys
 import time
+import zipfile
 from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent.parent      # .../app
 REPO_ROOT = APP_DIR.parent                            # repository root
 BUILD_DIR = REPO_ROOT / "build"
 WORK_DIR = BUILD_DIR / "_work"
-DIST_DIR = BUILD_DIR                                  # the exe lands here
+APP_BUNDLE = BUILD_DIR / "PS3HeadsetHub"              # onedir folder
+EXE_PATH = APP_BUNDLE / "PS3HeadsetHub.exe"
 SPEC_FILE = APP_DIR / "packaging" / "ps3hub.spec"
-EXE_NAME = "PS3HeadsetHub"
-#: Written beside the spec so the spec can always find it (SPECPATH),
-#: regardless of where PyInstaller's workpath points.
 VERSION_FILE = APP_DIR / "packaging" / "version_info.txt"
+EXE_NAME = "PS3HeadsetHub"
 
 #: Runtime dependencies the packaged application needs. hidapi/ttkbootstrap
-#: are hard requirements; sounddevice is optional (the native loopback DSP
-#: works without it, the FxSound route never touches it).
-REQUIRED = ("hidapi", "ttkbootstrap", "pillow")
-OPTIONAL = ("sounddevice", "numpy")
+#: are hard requirements; sounddevice/numpy power the native loopback DSP
+#: (the FxSound route works without them).
+REQUIRED = ("hidapi", "ttkbootstrap", "pillow", "numpy")
+OPTIONAL = ("sounddevice",)
 
 
 def log(message: str) -> None:
     print(f"[build] {message}", flush=True)
 
 
-def fail(message: str) -> "NoReturn":  # type: ignore[valid-type]
+def fail(message: str) -> None:
     print(f"[build] ERROR: {message}", file=sys.stderr, flush=True)
     raise SystemExit(1)
+
+
+def read_version() -> str:
+    text = (APP_DIR / "ps3hub" / "__init__.py").read_text(encoding="utf-8")
+    for line in text.splitlines():
+        if line.startswith("APP_VERSION"):
+            return line.split("=")[1].strip().strip('"')
+    return "0.0.0"
 
 
 def check_dependencies() -> None:
@@ -75,23 +88,19 @@ def check_dependencies() -> None:
             missing.append(package)
     if missing:
         fail("Missing runtime packages: " + ", ".join(missing) +
-             "\n    python -m pip install -r requirements.txt")
+             "\n    python -m pip install -r requirements.txt "
+             "numpy")
     for package in OPTIONAL:
         try:
             version = importlib_metadata.version(package)
         except importlib_metadata.PackageNotFoundError:
-            version = "absent (that backend will be skipped in the exe)"
+            version = "absent (the native loopback backend will be skipped)"
         log(f"dependency {package}: {version}")
 
 
 def write_version_resource() -> Path:
     """Emit a Windows VERSIONINFO file from APP_VERSION, return its path."""
-    version_text = APP_DIR / "ps3hub" / "__init__.py"
-    app_version = "0.0.0"
-    for line in version_text.read_text(encoding="utf-8").splitlines():
-        if line.startswith("APP_VERSION"):
-            app_version = line.split("=")[1].strip().strip('"')
-            break
+    app_version = read_version()
     parts = [int(piece) for piece in app_version.split(".")[:4]]
     while len(parts) < 4:
         parts.append(0)
@@ -154,12 +163,12 @@ def git_info() -> dict[str, str]:
     return info
 
 
-def run_pyinstaller(version_file: Path) -> Path:
-    """Invoke PyInstaller with the checked-in spec; return the exe path."""
+def run_pyinstaller(version_file: Path) -> None:
+    """Invoke PyInstaller with the checked-in onedir spec."""
     command = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm",
-        "--distpath", str(DIST_DIR),
+        "--distpath", str(BUILD_DIR),
         "--workpath", str(WORK_DIR),
         str(SPEC_FILE),
     ]
@@ -170,53 +179,91 @@ def run_pyinstaller(version_file: Path) -> Path:
     if result.returncode != 0:
         fail(f"PyInstaller exited with code {result.returncode} "
              f"after {elapsed:.0f}s")
-    exe = DIST_DIR / f"{EXE_NAME}.exe"
-    if not exe.exists():
-        fail(f"PyInstaller reported success but {exe} does not exist")
+    if not EXE_PATH.exists():
+        fail(f"PyInstaller reported success but {EXE_PATH} does not exist")
     log(f"built in {elapsed:.0f}s")
-    return exe
 
 
-def write_report(exe: Path) -> None:
+def folder_stats(bundle: Path) -> tuple[int, int]:
+    """Total bytes and file count of the onedir bundle."""
+    total = 0
+    count = 0
+    for path in bundle.rglob("*"):
+        if path.is_file():
+            total += path.stat().st_size
+            count += 1
+    return total, count
+
+
+def make_zip(bundle: Path, version: str) -> Path:
+    """Zip the onedir bundle into a self-contained distributable."""
+    zip_path = BUILD_DIR / f"{EXE_NAME}-{version}-win64.zip"
+    if zip_path.exists():
+        zip_path.unlink()
+    log(f"zipping -> {zip_path.name}")
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+        for path in sorted(bundle.rglob("*")):
+            if path.is_file():
+                zf.write(path, path.relative_to(bundle.parent))
+    size = zip_path.stat().st_size
+    log(f"zip written: {size / (1 << 20):.1f} MiB")
+    return zip_path
+
+
+def write_report(version: str, zip_path: Path | None) -> None:
     """Drop a build-report.txt next to the exe: what, when, how big."""
-    version = "unknown"
-    for line in (APP_DIR / "ps3hub" / "__init__.py").read_text(
-            encoding="utf-8").splitlines():
-        if line.startswith("APP_VERSION"):
-            version = line.split("=")[1].strip().strip('"')
-            break
-    size = exe.stat().st_size
-    digest = hashlib.sha256()
-    with exe.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(chunk)
+    exe_size = EXE_PATH.stat().st_size
+    total, count = folder_stats(APP_BUNDLE)
+    digest = hashlib.sha256(EXE_PATH.read_bytes()).hexdigest()
+
+    lines = [
+        "PS3 Wireless Stereo Headset Hub - build report",
+        f"generated : {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"version   : {version}",
+        f"layout    : onedir ({count} files, {total / (1 << 20):.1f} MiB total)",
+        f"artifact  : {EXE_PATH}",
+        f"exe size  : {exe_size:,} bytes ({exe_size / (1 << 20):.1f} MiB)",
+    ]
+    if zip_path is not None:
+        zip_size = zip_path.stat().st_size
+        zip_digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+        lines.append(f"zip       : {zip_path.name} "
+                     f"({zip_size / (1 << 20):.1f} MiB, "
+                     f"sha256 {zip_digest[:16]}...)")
     git = git_info()
-    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    report = (
-        f"PS3 Wireless Stereo Headset Hub - build report\n"
-        f"generated : {stamp}\n"
-        f"version   : {version}\n"
-        f"commit    : {git['commit']} (branch {git['branch']}, "
-        f"dirty: {git['dirty']})\n"
-        f"artifact  : {exe}\n"
-        f"size      : {size:,} bytes ({size / (1 << 20):.1f} MiB)\n"
-        f"sha256    : {digest.hexdigest()}\n"
-    )
+    lines.append(f"commit    : {git['commit']} (branch {git['branch']}, "
+                 f"dirty: {git['dirty']})")
+    lines.append(f"exe sha256: {digest}")
+    report = "\n".join(lines) + "\n"
     (BUILD_DIR / "build-report.txt").write_text(report, encoding="utf-8")
     log(report.replace("\n", "\n[build]   "))
 
 
+def verify_bundle() -> None:
+    """Sanity-check the onedir bundle before calling it done."""
+    internal = APP_BUNDLE / "_internal"
+    if not internal.is_dir():
+        fail(f"{internal} is missing - the onedir bundle is incomplete")
+    for required in ("EQExamples",):
+        if not (internal / required).is_dir():
+            fail(f"{internal / required} is missing - the Examples row "
+                 "would be empty in the packaged app")
+    log("bundle layout verified: _internal + EQExamples present")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Build the Hub as a single Windows executable into /build.")
+        description="Build the Hub as a onedir Windows app into /build.")
     parser.add_argument("--clean", action="store_true",
                         help="delete build/ before building")
+    parser.add_argument("--no-zip", action="store_true",
+                        help="skip the distributable zip")
     parser.add_argument("--skip-deps", action="store_true",
                         help="skip the dependency sanity check")
     args = parser.parse_args(argv)
 
     if os.name != "nt":
-        # PyInstaller builds for the running OS; a Windows exe needs Windows.
+        # PyInstaller builds for the running OS; a Windows app needs Windows.
         log("WARNING: not running on Windows - the artifact will not be a "
             "working Windows executable.")
 
@@ -227,10 +274,13 @@ def main(argv: list[str] | None = None) -> int:
         log(f"removing {BUILD_DIR}")
         shutil.rmtree(BUILD_DIR, ignore_errors=True)
 
+    version = read_version()
     version_file = write_version_resource()
-    exe = run_pyinstaller(version_file)
-    write_report(exe)
-    log(f"DONE: {exe}")
+    run_pyinstaller(version_file)
+    verify_bundle()
+    zip_path = None if args.no_zip else make_zip(APP_BUNDLE, version)
+    write_report(version, zip_path)
+    log(f"DONE: {EXE_PATH}")
     return 0
 
 

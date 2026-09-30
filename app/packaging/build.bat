@@ -1,25 +1,25 @@
 @echo off
-REM Build the distributable Windows executable.
+REM Build the distributable Windows application into <repo>\build.
+REM One windowed onedir app: build\PS3HeadsetHub\PS3HeadsetHub.exe
 setlocal
 cd /d "%~dp0\.."
 
-python -m pip install -r requirements.txt pyinstaller
+python -m pip install -r requirements.txt pyinstaller numpy
 if errorlevel 1 (
     echo Could not install the build dependencies.
     pause
     exit /b 1
 )
 
-if exist build rmdir /s /q build
-if exist dist rmdir /s /q dist
-
-pyinstaller packaging\ps3hub.spec
+python packaging\build_exe.py --clean %*
 if errorlevel 1 (
-    echo Build failed.
+    echo.
+    echo Build FAILED - read the messages above.
     pause
     exit /b 1
 )
 
 echo.
-echo Built dist\PS3HeadsetHub.exe
+echo Done. The app is in build\PS3HeadsetHub\PS3HeadsetHub.exe
+echo A distributable zip and build-report.txt are next to it in build\.
 pause

@@ -20,8 +20,10 @@ equalizer.
   a small card stacked at the bottom-right of the *screen* while the window is
   visible, and as a Windows toast when it is hidden in the tray or minimised.
   A Settings switch (**Always use Windows notifications**) forces the Windows
-  route even when the window is visible. Clicking a card opens the Hub.
-  In-app cards are rendered by [ttkbootstrap](https://ttkbootstrap.readthedocs.io/).
+  route even when the window is visible. Hovering a card pauses its
+  countdown; clicking it opens the Hub. Cards are rendered by
+  [ttkbootstrap](https://ttkbootstrap.readthedocs.io/), restyled into the
+  black-gold palette.
 * **EQ example presets.** A row of bundled one-click curves (Bass Maniac,
   Trapmetal, lofi, Pop, ...) with descriptions, loaded straight into the
   equalizer and FxSound without touching a stored preset.

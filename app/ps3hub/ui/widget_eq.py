@@ -304,12 +304,16 @@ class EQKnobRow(tk.Frame):
             canvas = tk.Canvas(self, width=size, height=height,
                                bg=self._bg, highlightthickness=0, bd=0,
                                cursor="hand2")
-            canvas.grid(row=0, column=index)
+            canvas.grid(row=0, column=index, sticky="ew")
             canvas.bind("<Button-1>", self._press)
             canvas.bind("<B1-Motion>", self._drag)
             canvas.bind("<ButtonRelease-1>", self._release)
             canvas.bind("<Double-Button-1>", self._reset_point)
             self._canvases.append(canvas)
+        # Stretch to the card's width: the per-band cells share the extra
+        # space, so the row spans the graph above it at every band count
+        # instead of stopping at 42 px per knob.
+        self.columnconfigure(tuple(range(len(self._gains))), weight=1)
 
     # ------------------------------------------------------------ drawing --
 
@@ -328,7 +332,10 @@ class EQKnobRow(tk.Frame):
                 continue
             freq = self._frequencies[index]
             gain = self._gains[index]
-            cx = canvas.winfo_width() / 2.0 or (self.KNOB / 2.0 + self.PAD_X)
+            # Cells stretch with the card; draw centred in whatever width
+            # the canvas actually has (zero before the first layout).
+            width = canvas.winfo_width()
+            cx = width / 2.0 if width > 1 else (self.KNOB / 2.0 + self.PAD_X)
             cy = self.LABEL_H + self.KNOB / 2.0
             radius = ring / 2.0
             colour = GOLD if self._enabled else IDLE
@@ -336,7 +343,7 @@ class EQKnobRow(tk.Frame):
 
             canvas.create_text(cx, self.LABEL_H - 3, anchor="s",
                                text=format_frequency(freq), fill=dim,
-                               font=font.tiny)
+                               font=font.tiny, width=max(width, self.KNOB) - 4)
             # The track, then the value arc on top: from -12 dB clockwise
             # up to the current gain.
             canvas.create_oval(cx - radius, cy - radius, cx + radius,

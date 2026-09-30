@@ -84,6 +84,59 @@ _LEVEL_ICON = {
 }
 
 
+def _retheme_toast(toast) -> None:
+    """Restyle a shown ``ToastNotification`` into the Hub's palette.
+
+    The library's colour bootstyles paint the card in loud theme colors
+    (solid cyan for ``info``, amber for ``warning``), which clash with the
+    app's black-gold look. Every popup owns its style names (``info.TFrame``
+    / ``@info.TLabel`` and the ``Icon*.@info.TLabel`` derived icon style) and
+    no other widget in the app uses them, so their colors are overridden per
+    popup: one dark surface, PAPER text, and a level accent for the title
+    and the glyph. ``apply_icon`` is re-run so the glyph bitmap is re-rendered
+    in the new foreground.
+    """
+    from .theme import FAULT, GOLD, PANEL, PAPER, RIDGE, WARN, fonts
+
+    accents = {
+        "success": GOLD,      # connected / healthy: the gold accent
+        "info": GOLD,
+        "warning": WARN,
+        "danger": FAULT,
+    }
+    bootstyle = str(getattr(toast, "bootstyle", "info")).split()[-1]
+    accent = accents.get(bootstyle, GOLD)
+
+    toplevel = toast.toplevel
+    container = toast.container
+    if toplevel is None or container is None:
+        return
+    try:
+        toplevel.configure(background=PANEL)
+        style = getattr(container, "style", None)
+        if style is None:
+            from tkinter import ttk as _ttk
+            style = _ttk.Style()
+        # One dark surface with a hairline edge for this popup's names.
+        style.configure(f"{bootstyle}.TFrame", background=PANEL,
+                        bordercolor=RIDGE, borderwidth=1, relief="solid")
+        container.configure(style=f"{bootstyle}.TFrame")
+        # Title and glyph carry the level accent; the message stays muted.
+        style.configure(f"@{bootstyle}.TLabel", background=PANEL,
+                        foreground=accent)
+        style.configure(f"@{bootstyle}.TLabel.msg", background=PANEL,
+                        foreground=MUTED, font=fonts().small)
+        children = container.winfo_children()
+        if len(children) >= 3:
+            icon_lbl, title_lbl, message_lbl = children[:3]
+            message_lbl.configure(style=f"@{bootstyle}.TLabel.msg")
+            # Re-render the glyph bitmap in the new accent colour.
+            from ttkbootstrap.style.icons import apply_icon
+            apply_icon(icon_lbl, toast.icon, size=20)
+    except Exception:
+        log.debug("Toast retheme failed", exc_info=True)
+
+
 class ToastOverlay:
     """Toasts anchored to the bottom-right of the screen, via ttkbootstrap.
 
@@ -172,14 +225,19 @@ class _ToastCard:
             position=(20, 40, "se"),
             master=owner._root,
         ).show_toast()
+        _retheme_toast(self._toast)
         # The library measured the real height on show; the floor is its
         # minimum card height, used when the value is somehow missing.
         self._height = int(getattr(self._toast, "_height", 0) or 0) or 75
         # The library's own button press only hides the toast; add our
-        # callback alongside it ("+" keeps both bindings alive).
+        # callback alongside it ("+" keeps both bindings alive). Hovering
+        # pauses the countdown (the pause is best-effort: the library has
+        # no public API for it, so the timer is cancelled and restarted).
         toplevel = getattr(self._toast, "toplevel", None)
         if toplevel is not None:
             toplevel.bind("<ButtonPress>", self._clicked, add="+")
+            toplevel.bind("<Enter>", self._hover_start, add="+")
+            toplevel.bind("<Leave>", self._hover_end, add="+")
 
     # ------------------------------------------------------------- public --
 
@@ -234,6 +292,32 @@ class _ToastCard:
         self._owner._card_closed(self)
 
     # ------------------------------------------------------------ handlers --
+
+    def _hover_start(self, _e=None) -> None:
+        """Pause the auto-dismiss timer while the pointer is on the card."""
+        toast = self._toast
+        timer = getattr(toast, "_duration_id", None)
+        if timer:
+            try:
+                toast._cancel(timer)
+                toast._duration_id = None
+                self._hovered_at = time.monotonic()
+            except Exception:
+                log.debug("Toast pause failed", exc_info=True)
+
+    def _hover_end(self, _e=None) -> None:
+        """Resume the auto-dismiss timer with the remaining time."""
+        toast = self._toast
+        if getattr(toast, "_duration_id", None) or toast.toplevel is None:
+            return
+        remaining = TOAST_LIFETIME_MS - int(
+            (time.monotonic() - getattr(self, "_hovered_at", 0.0)) * 1000)
+        if remaining <= 0:
+            remaining = 800  # hovered right up to the end: a brief grace
+        try:
+            toast._duration_id = toast.toplevel.after(remaining, toast.hide)
+        except Exception:
+            log.debug("Toast resume failed", exc_info=True)
 
     def _level_name(self) -> str:
         for name, style in _LEVEL_BOOTSTYLE.items():

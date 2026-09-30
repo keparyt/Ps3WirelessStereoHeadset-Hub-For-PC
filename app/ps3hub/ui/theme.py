@@ -101,9 +101,30 @@ PAD = 16
 PAD_SMALL = 8
 
 
+def _preinit_ttkbootstrap() -> None:
+    """Instantiate ttkbootstrap's style singleton *before* our theming.
+
+    The toast widget builds its styles through ttkbootstrap's Style engine,
+    which is a singleton created lazily on first use - and its creation
+    force-switches the whole Tk application to the ``bootstrap-light``
+    theme, repainting every ttk widget white. Creating the singleton here,
+    then applying our clam configuration over it, means a later toast
+    reuses the existing engine instead of re-theming the app (an existing
+    singleton is never re-themed by the toast path).
+    """
+    try:
+        from ttkbootstrap.style.engine import Style
+        Style()
+    except Exception:
+        # ttkbootstrap missing or changed shape: the app theme still works,
+        # and the first toast would flip the theme as before.
+        pass
+
+
 def apply(root) -> ttk.Style:
     """Configure ttk so the standard widgets match the custom ones."""
     font = fonts()
+    _preinit_ttkbootstrap()
     style = ttk.Style(root)
     try:
         style.theme_use("clam")  # the only built-in theme that honours colours

@@ -23,6 +23,7 @@ from typing import Any, Callable
 from .. import APP_NAME, APP_VERSION
 from ..actions import ActionContext, ActionRunner, KeySender
 from ..applog import get_logger
+from ..updates import UpdateChecker
 from ..config import AppConfig, ConfigStore, Settings
 from ..device import EventType, HeadsetService, ServiceEvent
 from ..inputs import InputEvent, InputId
@@ -164,6 +165,11 @@ class HubApp(tk.Tk):
             self._audio.start()
             if self._config.audio.get("enabled"):
                 self._audio.set_enabled(True, self._config.audio.get("backend", "native"))
+
+        # Update check: throttled to one request a day on a daemon thread;
+        # the toast only fires when a genuinely newer release exists.
+        self._updates = UpdateChecker()
+        self._updates.check(on_done=self._on_update_result)
 
         self._runner = ActionRunner(ActionContext(
             keys=KeySender(),
@@ -346,6 +352,24 @@ class HubApp(tk.Tk):
         self.geometry(f"{MIN_WIDTH}x{MIN_HEIGHT}")
 
     # ----------------------------------------------------------- navigation --
+
+    def _on_update_result(self, info) -> None:
+        """Worker-thread callback: surface a new release as a toast."""
+        if info is None:
+            return
+        self.after(0, lambda: self._notifier.show(
+            "Update available",
+            f"{info.label} - click to open the download page.",
+            "info",
+            on_click=lambda: self._open_url(info.url),
+        ))
+
+    def _open_url(self, url: str) -> None:
+        import webbrowser
+        try:
+            webbrowser.open(url)
+        except Exception:
+            log.debug("Could not open %s", url)
 
     def _select_view(self, key: str) -> None:
         log.debug("View switched: %s -> %s", getattr(self, "_current", "?"), key)

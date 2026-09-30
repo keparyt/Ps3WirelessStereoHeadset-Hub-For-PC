@@ -1,0 +1,160 @@
+"""Update-check logic: version comparison, tag parsing, throttling.
+
+Network access is stubbed out - the fetcher is a callable the tests
+control, so these run offline and deterministically.
+"""
+
+from __future__ import annotations
+
+from ps3hub.updates import (
+    UpdateChecker,
+    UpdateInfo,
+    fetch_latest,
+    is_newer,
+    parse_version,
+)
+
+
+# ------------------------------------------------------------ versioning --
+
+def test_parse_version_strips_the_v_prefix_and_suffixes():
+    assert parse_version("v1.2.10") == (1, 2, 10)
+    assert parse_version("1.2.10") == (1, 2, 10)
+    assert parse_version("v1.3.0-rc1") == (1, 3, 0)
+    assert parse_version("release-2.0") == (2, 0)
+    assert parse_version("garbage") is None
+    assert parse_version("") is None
+    assert parse_version(None) is None
+
+
+def test_is_newer_compares_numerically_not_as_text():
+    assert is_newer("v1.2.11", "1.2.10")
+    assert is_newer("v1.10.0", "v1.9.9")      # string compare would fail this
+    assert is_newer("v2.0", "v1.9.9")         # short tuple pads with zeros
+    assert is_newer("v1.2.10.1", "v1.2.10")
+    assert not is_newer("v1.2.10", "v1.2.10")
+    assert not is_newer("v1.2.09", "v1.2.10")
+    assert not is_newer("v0.9", "v1.2.10")
+    assert not is_newer("garbage", "1.2.10")
+    assert not is_newer("v1.2.11", "not-a-version")
+
+
+# ----------------------------------------------------------------- fetch --
+
+class _FakeResponse:
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def read(self) -> bytes:
+        return self._payload
+
+
+def _release(tag: str, draft: bool = False, prerelease: bool = False) -> bytes:
+    import json
+    return json.dumps({
+        "tag_name": tag, "draft": draft, "prerelease": prerelease,
+        "html_url": f"https://example.com/releases/tag/{tag}",
+    }).encode("utf-8")
+
+
+def test_fetch_latest_returns_newer_release(monkeypatch):
+    import urllib.request
+    monkeypatch.setattr(
+        urllib.request, "urlopen",
+        lambda _req, timeout=None: _FakeResponse(_release("v1.99.0")))
+    info = fetch_latest()
+    assert info is not None
+    assert info.version == "1.99.0"
+    assert info.url == "https://example.com/releases/tag/v1.99.0"
+    assert info.label == "Version 1.99.0 is available"
+
+
+def test_fetch_latest_ignores_same_older_draft_and_prerelease(monkeypatch):
+    import urllib.request
+    for tag, kw in (("v1.2.11", {}), ("v1.2.10", {}), ("v1.3.0", {"draft": True}),
+                    ("v1.3.0", {"prerelease": True})):
+        monkeypatch.setattr(
+            urllib.request, "urlopen",
+            lambda _req, timeout=None, _tag=tag, _kw=kw: _FakeResponse(
+                _release(_tag, **_kw)))
+        assert fetch_latest() is None, tag
+
+
+def test_fetch_latest_survives_a_network_error(monkeypatch):
+    import urllib.error
+    import urllib.request
+
+    def boom(_req, timeout=None):
+        raise urllib.error.URLError("no network")
+
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
+    assert fetch_latest(timeout=0.1) is None
+
+
+# --------------------------------------------------------------- checker --
+
+def test_checker_throttles_to_one_fetch_per_interval():
+    calls = []
+
+    def fake_fetch():
+        calls.append(1)
+        return UpdateInfo(version="9.9.9", url="https://example.com")
+
+    checker = UpdateChecker(fetch=fake_fetch, interval=3600)
+    first = checker.check()
+    # A fast fake fetch may land before check() returns; either None (worker
+    # still running) or the result (already cached) is acceptable.
+    import time
+    deadline = time.monotonic() + 2
+    while not calls and time.monotonic() < deadline:
+        time.sleep(0.02)
+    # A second check inside the throttle window returns the cached answer
+    # without a new fetch.
+    assert checker.check() is not None
+    assert len(calls) == 1
+    assert first is None or isinstance(first, UpdateInfo)
+
+
+def test_checker_force_bypasses_the_throttle():
+    calls = []
+
+    def fake_fetch():
+        calls.append(1)
+        return None
+
+    checker = UpdateChecker(fetch=fake_fetch, interval=3600)
+    import time
+    checker.check()
+    deadline = time.monotonic() + 2
+    while not calls and time.monotonic() < deadline:
+        time.sleep(0.02)
+    checker.check(force=True)
+    deadline = time.monotonic() + 2
+    while len(calls) < 2 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert len(calls) == 2
+
+
+def test_checker_callback_receives_the_result():
+    import threading
+
+    def fake_fetch():
+        return UpdateInfo(version="2.0.0", url="https://example.com")
+
+    checker = UpdateChecker(fetch=fake_fetch, interval=3600)
+    seen = []
+    done = threading.Event()
+
+    def on_done(info):
+        seen.append(info)
+        done.set()
+
+    checker.check(on_done=on_done)
+    assert done.wait(2)
+    assert seen and seen[0].version == "2.0.0"

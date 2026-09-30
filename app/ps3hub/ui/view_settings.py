@@ -13,6 +13,7 @@ from typing import Callable
 
 from .. import APP_NAME, APP_VERSION
 from ..config import Settings, config_path
+from ..updates import RELEASES_PAGE
 from ..protocol import (
     TARGET_ADAPTER_MODEL, TARGET_HEADSET_MARKING, TARGET_HEADSET_MODEL,
     TARGET_PID, TARGET_VID,
@@ -176,12 +177,74 @@ class SettingsView(tk.Frame):
         ttk.Button(buttons, text="Reset everything", style="Danger.TButton",
                    command=self._on_reset_all).pack(side="left")
 
+        # -- updates ------------------------------------------------------------
+        updates = Card(root, "Updates", f"you are on version {APP_VERSION}")
+        updates.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 12))
+        row = tk.Frame(updates.body, bg=PANEL)
+        row.pack(fill="x")
+        ttk.Button(row, text="Check for updates", style="Ghost.TButton",
+                   command=self._on_check_updates).pack(side="left")
+        ttk.Button(row, text="Open the releases page", style="Ghost.TButton",
+                   command=lambda: self._open_url(RELEASES_PAGE)).pack(
+            side="left", padx=(8, 0))
+        self._update_status = tk.Label(
+            updates.body,
+            text="The Hub checks GitHub for a newer release at most once a day.",
+            bg=PANEL, fg=MUTED, font=font.small, anchor="w", justify="left",
+            wraplength=620,
+        )
+        self._update_status.pack(fill="x", pady=(8, 0))
+        # Surface a result the app already fetched at startup, if any.
+        existing = getattr(self._update_checker(), "last_result", None)
+        if existing is not None:
+            self._show_update(existing)
+
         tk.Label(
             root, text=f"{APP_NAME} · version {APP_VERSION}",
             bg=ABYSS, fg=FAINT, font=font.tiny,
-        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
     # -------------------------------------------------------------- helpers --
+
+    def _update_checker(self):
+        """The app's UpdateChecker, or None when unavailable (tests, odd hosts)."""
+        master = getattr(self, "master", None)
+        checker = getattr(master, "_updates", None)
+        return checker if hasattr(checker, "check") else None
+
+    def _on_check_updates(self) -> None:
+        self._update_status.configure(
+            text="Checking GitHub for a newer release...", fg=MUTED)
+
+        def done(info) -> None:
+            # Land back on the Tk thread.
+            self.after(0, lambda: self._show_update(info))
+
+        checker = self._update_checker()
+        if checker is not None:
+            checker.check(force=True, on_done=done)
+        else:
+            from ..updates import fetch_latest
+            info = fetch_latest()
+            self._show_update(info)
+
+    def _show_update(self, info) -> None:
+        if info is None:
+            self._update_status.configure(
+                text="You are up to date - no newer release was found "
+                     "(" + "or the check could not reach GitHub).",
+                fg=MUTED)
+            return
+        self._update_status.configure(
+            text=f"{info.label} - click “Open the releases page” to get it.",
+            fg=GOLD)
+
+    def _open_url(self, url: str) -> None:
+        import webbrowser
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
 
     def _checkbox(self, parent: tk.Widget, title: str, help_text: str) -> tk.BooleanVar:
         font = fonts()

@@ -21,5 +21,5 @@ __all__ = ["APP_NAME", "APP_SLUG", "APP_VERSION", "APP_AUTHOR_URL"]
 
 APP_NAME = "PS3 Wireless Stereo Headset Hub"
 APP_SLUG = "PS3HeadsetHub"
-APP_VERSION = "1.2.11"
+APP_VERSION = "1.2.12"
 APP_AUTHOR_URL = "https://github.com/keparyt/Ps3WirelessStereoHeadset-Hub-For-PC"

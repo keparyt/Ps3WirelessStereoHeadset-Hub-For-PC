@@ -114,6 +114,19 @@ class HubApp(tk.Tk):
 
         apply(self)
         self._fonts = fonts()
+        log.debug(
+            "UI constructed: %s %s | python %s | display %sx%s | settings: "
+            "mappings=%s settle=%sms debounce=%sms resync=%s low_battery=%s%% "
+            "force_windows_toasts=%s",
+            APP_NAME, APP_VERSION, sys.version.split()[0],
+            self.winfo_screenwidth(), self.winfo_screenheight(),
+            self._config.settings.mappings_enabled,
+            self._config.settings.settle_seconds,
+            self._config.settings.debounce_seconds,
+            self._config.settings.resync_threshold,
+            self._config.settings.low_battery_threshold,
+            getattr(self._config.settings, "force_windows_toasts", False),
+        )
 
         self._service = HeadsetService(
             input_handler=self._on_input,
@@ -335,6 +348,7 @@ class HubApp(tk.Tk):
     # ----------------------------------------------------------- navigation --
 
     def _select_view(self, key: str) -> None:
+        log.debug("View switched: %s -> %s", getattr(self, "_current", "?"), key)
         for name, view in self._views.items():
             if name == key:
                 view.pack(fill="both", expand=True, pady=(0, 14))
@@ -716,7 +730,8 @@ class HubApp(tk.Tk):
         if self._shutting_down:
             return
         self._shutting_down = True
-        log.info("Shutting down")
+        log.info("Shutting down (clean exit: saving geometry, stopping audio, "
+                 "device service, notifier, tray)")
         self._save_geometry()
         try:
             if self._audio is not None:
@@ -737,4 +752,5 @@ class HubApp(tk.Tk):
                 self._tray = None
         except Exception:
             log.exception("Could not stop the system tray cleanly")
+        log.info("Shutdown complete; all subsystems stopped")
         self.destroy()

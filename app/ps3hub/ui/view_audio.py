@@ -873,6 +873,15 @@ class AudioView(tk.Frame):
         push = getattr(engine, "fxsound_request_live_push", None)
         if callable(push):
             push(profile)
+            log.debug(
+                "Live push queued: bands=%s master=%+.1f q=%.1f leveling=%.1f "
+                "balance=%+.1f | effects bass=%.1f clarity=%.1f ambience=%.1f "
+                "surround=%.1f boost=%.1f",
+                len(profile.eq), profile.master_gain_db, profile.filter_q,
+                profile.volume_leveling_db, profile.balance_db,
+                profile.bass, profile.clarity, profile.ambience,
+                profile.surround, profile.dynamic_boost,
+            )
             # Open the echo-suppression window around this push. The echo
             # fingerprint carries the effect levels FxSound last reported:
             # the push does not touch them, so the settled status.json will

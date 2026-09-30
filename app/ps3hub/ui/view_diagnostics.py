@@ -11,7 +11,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from .. import APP_NAME, APP_VERSION
-from ..applog import log_dir, recent
+from ..applog import log_dir, log_files, recent
 from ..device import HeadsetService, ServiceState
 from ..protocol import TARGET_PID, TARGET_VID
 from .theme import (
@@ -104,6 +104,22 @@ class DiagnosticsView(tk.Frame):
         ttk.Button(controls, text="Open log folder", style="Ghost.TButton",
                    command=self._open_folder).pack(side="right", padx=(0, 8))
 
+        # One rotating file per subsystem plus panic.log for crashes; each
+        # row shows its size and opens the file directly.
+        self._files_box = tk.Frame(log_card.body, bg=PANEL)
+        self._files_box.pack(fill="x", pady=(0, 8))
+        self._files_signature = ""
+        self._file_rows: list[tk.Widget] = []
+        files_hint = tk.Label(
+            self._files_box,
+            text=("Logs: one file per subsystem (DEBUG level) + panic.log for "
+                  "crashes - attach them to any bug report."),
+            bg=PANEL, fg=FAINT, font=font.tiny, anchor="w",
+        )
+        files_hint.pack(fill="x")
+        self._files_rows_frame = tk.Frame(self._files_box, bg=PANEL)
+        self._files_rows_frame.pack(fill="x")
+
         text_wrap = tk.Frame(log_card.body, bg=DECK, highlightthickness=1,
                              highlightbackground=RIDGE)
         text_wrap.pack(fill="both", expand=True)
@@ -127,6 +143,51 @@ class DiagnosticsView(tk.Frame):
         footer.pack(fill="x", pady=(8, 0))
         tk.Label(footer, text=f"{APP_NAME} {APP_VERSION} · logs in {log_dir()}",
                  bg=PANEL, fg=FAINT, font=font.tiny, anchor="w").pack(fill="x")
+        self._render_log_files()
+
+    def _render_log_files(self) -> None:
+        """Refresh the per-file rows when the set of files or sizes changes."""
+        import os
+        files = log_files()
+        signature = "|".join(
+            f"{domain}:{path.stat().st_size if path.exists() else 0}"
+            for domain, path in sorted(files.items()))
+        if signature == self._files_signature:
+            return
+        self._files_signature = signature
+
+        for widget in self._file_rows:
+            widget.destroy()
+        self._file_rows.clear()
+
+        font = fonts()
+        if not files:
+            empty = tk.Label(self._files_rows_frame,
+                             text="No log files written yet.",
+                             bg=PANEL, fg=FAINT, font=font.tiny)
+            empty.pack(anchor="w")
+            self._file_rows.append(empty)
+            return
+        for domain, path in sorted(files.items()):
+            row = tk.Frame(self._files_rows_frame, bg=PANEL)
+            row.pack(fill="x", pady=1)
+            self._file_rows.append(row)
+            try:
+                size_kb = path.stat().st_size / 1024
+                size_text = f"{size_kb:.0f} KB" if size_kb < 1024 else f"{size_kb / 1024:.1f} MB"
+            except OSError:
+                size_text = "?"
+            colour = FAULT if domain == "panic" else MUTED
+            tk.Label(row, text=f"{domain}.log" if domain != "panic" else "panic.log",
+                     bg=PANEL, fg=PAPER if domain == "panic" else PAPER,
+                     font=font.code_small, width=14, anchor="w").pack(side="left")
+            tk.Label(row, text=size_text, bg=PANEL, fg=colour,
+                     font=font.tiny, width=9, anchor="e").pack(side="left", padx=(6, 8))
+            ttk.Button(row, text="Open", style="Ghost.TButton", width=6,
+                       command=lambda p=path: self._open_path(p)).pack(side="left")
+            ttk.Button(row, text="Copy path", style="Ghost.TButton", width=10,
+                       command=lambda p=path: self._copy_text(str(p))).pack(
+                side="left", padx=(6, 0))
 
     # ------------------------------------------------------------- updating --
 
@@ -159,6 +220,7 @@ class DiagnosticsView(tk.Frame):
         self._render_collections(state)
         self._render_unknown()
         self._render_log()
+        self._render_log_files()
 
     def _render_collections(self, state: ServiceState) -> None:
         signature = "|".join(
@@ -259,20 +321,41 @@ class DiagnosticsView(tk.Frame):
 
     def _copy(self) -> None:
         try:
+            state = self._service_state()
+            header = (
+                f"{APP_NAME} {APP_VERSION}\n"
+                f"receiver={getattr(state, 'receiver_present', '?')} "
+                f"linked={getattr(state, 'headset_linked', '?')} "
+                f"reports={getattr(state, 'total_reports', '?')} "
+                f"inputs={getattr(state, 'inputs_detected', '?')}\n"
+                "---\n"
+            )
             self.clipboard_clear()
-            self.clipboard_append("\n".join(recent(LOG_TAIL)))
+            self.clipboard_append(header + "\n".join(recent(LOG_TAIL)))
+        except Exception:
+            self._copy_text("\n".join(recent(LOG_TAIL)))
+
+    def _service_state(self):
+        return getattr(self._service, "state", None) or getattr(
+            self._service, "_state", None)
+
+    def _copy_text(self, text: str) -> None:
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(text)
+        except Exception:
+            pass
+
+    def _open_path(self, path) -> None:
+        import subprocess
+        import os
+        try:
+            if os.name == "nt":
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            else:
+                subprocess.Popen(["xdg-open", str(path)])
         except Exception:
             pass
 
     def _open_folder(self) -> None:
-        import subprocess
-        import os
-
-        target = str(log_dir())
-        try:
-            if os.name == "nt":
-                os.startfile(target)  # type: ignore[attr-defined]
-            else:
-                subprocess.Popen(["xdg-open", target])
-        except Exception:
-            pass
+        self._open_path(log_dir())

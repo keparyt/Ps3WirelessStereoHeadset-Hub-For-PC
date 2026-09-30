@@ -5,11 +5,13 @@ executed actions - and each kind used to have its own delivery path. Now
 every toast goes through :class:`ToastCenter`, which picks one of two
 surfaces:
 
-* **The screen corner.** A stacked overlay anchored to the bottom-right of
-  the *screen* (not the window: the window may be minimised or hidden in the
-  tray while events arrive). Rounded cards in the theme's black-gold look,
-  hover to pause, a click callback, deduplication of identical consecutive
-  toasts, and a fade-out.
+* **The screen corner.** Stacked toasts anchored to the bottom-right of
+  the *screen* (not the window: the window may be minimised or hidden in
+  the tray while events arrive), rendered by ``ttkbootstrap``'s
+  ``ToastNotification`` - it owns the card look, the fade-out and the
+  stacking/reflow of concurrent toasts. This module keeps the routing-level
+  behaviour on top: dedup, the cap on concurrent cards, and the click
+  callback.
 * **A Windows toast.** When the main window is hidden or minimised, an
   in-app overlay would be invisible, so the toast goes to Windows instead,
   delivered with ``Shell_NotifyIconW`` balloon tips (rendered as proper
@@ -32,7 +34,6 @@ import time
 from typing import Callable
 
 from ..applog import get_logger
-from .theme import ABYSS, FAULT, GOLD, MUTED, PANEL, PAPER, RIDGE, WARN, fonts
 
 log = get_logger("ui.toast")
 
@@ -40,7 +41,8 @@ IS_WINDOWS = os.name == "nt"
 
 #: How long one in-app toast stays fully visible.
 TOAST_LIFETIME_MS = 3800
-#: How often the overlay animates (the fade runs on the same clock).
+#: How often queued toasts are drained onto the Tk thread, and how often
+#: the overlay notices toasts the library has auto-dismissed.
 TOAST_TICK_MS = 33
 #: Identical consecutive toasts within this window are swallowed.
 DEDUP_SECONDS = 3.0
@@ -66,56 +68,55 @@ def _level_flag(level: str) -> int:
     return _LEVEL_FLAGS.get(str(level or "info").lower(), 0x1)
 
 
-def _level_colour(level: str) -> str:
-    return {
-        "ok": GOLD, "info": MUTED, "warn": WARN, "error": FAULT,
-    }.get(str(level or "info").lower(), MUTED)
-
-
 # ---------------------------------------------------------------------------
-# The in-app overlay
+# The in-app overlay (ttkbootstrap-backed)
+
+
+#: ttkbootstrap bootstyle per app toast level.
+_LEVEL_BOOTSTYLE = {
+    "ok": "success", "info": "info", "notice": "info",
+    "warn": "warning", "error": "danger",
+}
+#: Bootstrap-Icons glyph per level (rendered from the built-in icon font).
+_LEVEL_ICON = {
+    "ok": "headphones", "info": "info-circle-fill",
+    "warn": "exclamation-triangle-fill", "error": "x-octagon-fill",
+}
 
 
 class ToastOverlay:
-    """A stack of toasts anchored to the bottom-right of the screen.
+    """Toasts anchored to the bottom-right of the screen, via ttkbootstrap.
 
-    Owns one borderless ``Toplevel`` per visible toast. Hovering pauses the
-    countdown; clicking invokes the toast's callback and dismisses it.
+    Delegates drawing, stacking, reflow, timing and dismissal to
+    ``ttkbootstrap.widgets.toast.ToastNotification`` - concurrent toasts at
+    the same corner stack and reflow automatically - and keeps only the
+    routing-level bookkeeping: dedup, the cap on concurrent cards, and the
+    click callback.
     """
-
-    WIDTH = 300
-    PADDING = 12
-    GAP = 8
-    CORNER = 10
-    ACCENT_WIDTH = 3
 
     def __init__(self, root) -> None:
         self._root = root
         self._toasts: list[_ToastCard] = []
-        self._job: str | None = None
 
     # ------------------------------------------------------------- public --
 
     def show(self, title: str, message: str, level: str = "info",
              on_click: Callable[[], None] | None = None) -> bool:
         """Show one toast. Never raises, never blocks."""
+        # An identical toast still on screen restarts instead of stacking.
+        for existing in self._toasts:
+            if existing.matches(title, message):
+                existing.refresh()
+                return True
         try:
             card = _ToastCard(self, str(title or ""), str(message or ""),
                               level, on_click)
         except Exception:
             log.exception("In-app toast failed")
             return False
-        # An identical toast still on screen restarts instead of stacking.
-        for existing in self._toasts:
-            if existing.matches(title, message):
-                existing.refresh()
-                card.close(instant=True)
-                return True
         self._toasts.append(card)
         while len(self._toasts) > MAX_STACK:
             self._toasts.pop(0).close(instant=True)
-        self._reposition()
-        self._ensure_loop()
         return True
 
     def dismiss_all(self) -> None:
@@ -124,116 +125,61 @@ class ToastOverlay:
 
     # ------------------------------------------------------------ internals --
 
-    def _reposition(self) -> None:
-        """Stack the cards upward from the bottom-right of the screen."""
-        import tkinter as tk
-        try:
-            right = self._root.winfo_screenwidth() - 14
-            bottom = self._root.winfo_screenheight() - 48
-        except tk.TclError:
-            return
-        for card in reversed(self._toasts):
-            card.place_at(right, bottom)
-            bottom -= card.height + self.GAP
+    def sweep(self) -> None:
+        """Drop cards the library has already dismissed and destroyed.
 
-    def _ensure_loop(self) -> None:
-        if self._job is not None:
-            return
-        self._job = self._root.after(TOAST_TICK_MS, self._step)
-
-    def _step(self) -> None:
-        self._job = None
-        now = time.monotonic()
+        ``ToastNotification`` auto-closes on its own duration without telling
+        anyone, so the pump calls this every tick to notice cards whose
+        window is gone and keep the bookkeeping (dedup, the cap) truthful.
+        """
         for card in list(self._toasts):
-            card.tick(now)
-        before = len(self._toasts)
-        self._toasts = [c for c in self._toasts if c.alive]
-        if len(self._toasts) != before:
-            self._reposition()
-        if self._toasts:
-            self._job = self._root.after(TOAST_TICK_MS, self._step)
+            card.tick(time.monotonic())
 
     def _card_closed(self, card: "_ToastCard") -> None:
         if card in self._toasts:
             self._toasts.remove(card)
-            self._reposition()
 
 
 class _ToastCard:
-    """One toast: a borderless Toplevel with rounded corners and a fade."""
+    """One toast, rendered by ttkbootstrap's ``ToastNotification``.
+
+    Stacking, reflow, theming, the icon and the duration countdown are the
+    library's job; this wrapper adds the click callback, dedup identity and
+    the lifecycle bookkeeping the overlay tracks. The window is created and
+    shown right here: the library's constructor only validates, and
+    ``show_toast()`` is what puts a card on screen.
+    """
 
     def __init__(self, owner: ToastOverlay, title: str, message: str,
                  level: str, on_click: Callable[[], None] | None) -> None:
-        import tkinter as tk
-
         self._owner = owner
         self._title = title
         self._message = message
         self._on_click = on_click
         self._alive = True
-        self._hover = False
-        self._shown_at = time.monotonic()
-        self._elapsed = 0.0
 
-        top = tk.Toplevel(master=owner._root)
-        top.withdraw()
-        top.overrideredirect(True)
-        top.attributes("-topmost", True)
-        try:
-            # The ABYSS margins around the card become transparent, which is
-            # what gives the rounded corners real shape on Windows.
-            top.attributes("-transparentcolor", ABYSS)
-        except tk.TclError:
-            pass
-        top.configure(bg=ABYSS)
-        self._top = top
+        from ttkbootstrap.widgets.toast import ToastNotification
 
-        width = ToastOverlay.WIDTH
-        pad = ToastOverlay.PADDING
-        text_width = width - pad * 2 - ToastOverlay.ACCENT_WIDTH - 8
-
-        font = fonts()
-        rows: list[tuple[str, object, str]] = []
-        if title:
-            rows.append((title, font.strong, PAPER))
-        for line in ((message or "").splitlines() or [""]):
-            rows.append((line, font.small, MUTED))
-
-        # Measure first (on a throwaway canvas) so the window is born the
-        # right size instead of visibly resizing into place.
-        measure = tk.Canvas(top, bg=ABYSS, highlightthickness=0)
-        y = float(pad)
-        for text, fnt, _colour in rows:
-            tid = measure.create_text(0, 0, text=text, font=fnt,
-                                      width=text_width, anchor="nw")
-            bbox = measure.bbox(tid)
-            y = (bbox[3] if bbox else y + 12) + 6
-        measure.destroy()
-        content_h = int(max(y + pad - 4, 44))
-        self._height = content_h + 2
-
-        canvas = tk.Canvas(top, bg=ABYSS, highlightthickness=0, bd=0,
-                           width=width - 2, height=self._height)
-        canvas.pack(fill="both", expand=True)
-        self._canvas = canvas
-        canvas.bind("<Button-1>", self._clicked)
-        canvas.bind("<Enter>", self._enter)
-        canvas.bind("<Leave>", self._leave)
-
-        from .theme import round_rect
-        round_rect(canvas, 1, 1, width - 3, content_h, ToastOverlay.CORNER,
-                   fill=PANEL, outline=RIDGE)
-        accent = _level_colour(level)
-        canvas.create_rectangle(
-            2, 8, 2 + ToastOverlay.ACCENT_WIDTH, content_h - 8,
-            fill=accent, outline="")
-        y = float(pad)
-        for text, fnt, colour in rows:
-            tid = canvas.create_text(pad + ToastOverlay.ACCENT_WIDTH + 8, y,
-                                     text=text, anchor="nw", fill=colour,
-                                     font=fnt, width=text_width)
-            bbox = canvas.bbox(tid)
-            y = (bbox[3] if bbox else y + 12) + 6
+        bootstyle = _LEVEL_BOOTSTYLE.get(str(level or "info").lower(), "info")
+        icon = _LEVEL_ICON.get(str(level or "info").lower(), "info-circle-fill")
+        # (x, y, anchor): 20 px in from the right, 40 px up from the bottom.
+        self._toast = ToastNotification(
+            title=title,
+            message=message,
+            duration=TOAST_LIFETIME_MS,
+            bootstyle=bootstyle,
+            icon=icon,
+            position=(20, 40, "se"),
+            master=owner._root,
+        ).show_toast()
+        # The library measured the real height on show; the floor is its
+        # minimum card height, used when the value is somehow missing.
+        self._height = int(getattr(self._toast, "_height", 0) or 0) or 75
+        # The library's own button press only hides the toast; add our
+        # callback alongside it ("+" keeps both bindings alive).
+        toplevel = getattr(self._toast, "toplevel", None)
+        if toplevel is not None:
+            toplevel.bind("<ButtonPress>", self._clicked, add="+")
 
     # ------------------------------------------------------------- public --
 
@@ -249,75 +195,51 @@ class _ToastCard:
         return self._title == title and self._message == message
 
     def refresh(self) -> None:
-        """A duplicate arrived: restart the countdown instead of stacking."""
-        self._shown_at = time.monotonic()
-        self._elapsed = 0.0
+        """A duplicate arrived: restart the countdown instead of stacking.
 
-    def place_at(self, right: int, bottom: int) -> None:
-        import tkinter as tk
+        Done with a *fresh* popup: the library's fade-out reads its current
+        ``toplevel`` attribute on every step, so hiding and re-showing the
+        same object would point the old window's fade at the new one and
+        destroy it. Separate objects fade and show independently.
+        """
+        if not self._alive:
+            return
         try:
-            width = ToastOverlay.WIDTH
-            self._top.geometry(
-                f"{width}x{self._height}+{right - width}+{bottom - self._height}"
-            )
-            if not self._top.winfo_ismapped():
-                self._top.deiconify()
-        except tk.TclError:
-            pass
+            self._toast.hide()
+        except Exception:
+            log.debug("Toast refresh failed", exc_info=True)
+        self._alive = False
+        self._owner._card_closed(self)
+        self._owner.show(self._title, self._message, self._level_name(),
+                         self._on_click)
 
     def tick(self, now: float) -> None:
-        """Advance the countdown; close the card when it has expired."""
-        if not self._hover:
-            self._elapsed = now - self._shown_at
-            if self._elapsed * 1000 >= TOAST_LIFETIME_MS:
-                self.close()
+        """Notice auto-dismissal: the library hides itself on its duration
+        and never announces it, so the pump polls for the dead window."""
+        if not self._alive:
+            return
+        if getattr(self._toast, "toplevel", None) is None:
+            # Fully faded out and destroyed by the library's own timer.
+            self._alive = False
+            self._owner._card_closed(self)
 
     def close(self, instant: bool = False) -> None:
         if not self._alive:
             return
         self._alive = False
-        if instant:
-            self._destroy()
-            self._owner._card_closed(self)
-            return
-        self._fade(1.0)
-
-    # ------------------------------------------------------------ internals --
-
-    def _fade(self, alpha: float) -> None:
-        import tkinter as tk
-        if not self._alive:
-            return
         try:
-            self._top.attributes("-alpha", alpha)
-        except tk.TclError:
-            pass
-        if alpha <= 0.1:
-            self._destroy()
-            self._owner._card_closed(self)
-            return
-        try:
-            self._top.after(30, lambda: self._fade(alpha - 0.25))
-        except tk.TclError:
-            pass
-
-    def _destroy(self) -> None:
-        try:
-            self._top.destroy()
-        except tk.TclError:
-            pass
+            self._toast.hide()  # idempotent in the library, any state
+        except Exception:
+            log.debug("Toast close failed", exc_info=True)
+        self._owner._card_closed(self)
 
     # ------------------------------------------------------------ handlers --
 
-    def _enter(self, _e=None) -> None:
-        """Hover: freeze the countdown at its current progress."""
-        self._hover = True
-        self._elapsed = time.monotonic() - self._shown_at
-
-    def _leave(self, _e=None) -> None:
-        """Unhover: resume the countdown from where it was frozen."""
-        self._hover = False
-        self._shown_at = time.monotonic() - self._elapsed
+    def _level_name(self) -> str:
+        for name, style in _LEVEL_BOOTSTYLE.items():
+            if style == self._toast.bootstyle:
+                return name
+        return "info"
 
     def _clicked(self, _e=None) -> None:
         callback = self._on_click
@@ -595,6 +517,10 @@ class ToastCenter:
                 self._deliver(title, message, level, on_click)
             except Exception:
                 log.exception("Toast delivery failed")
+        try:
+            self._overlay.sweep()
+        except Exception:
+            log.debug("Toast sweep failed", exc_info=True)
         try:
             self._job = self._root.after(TOAST_TICK_MS, self._pump)
         except Exception:

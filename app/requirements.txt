@@ -1,1 +1,2 @@
 hidapi>=0.14.0
+ttkbootstrap>=2.2.0

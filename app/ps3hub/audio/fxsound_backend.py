@@ -658,11 +658,21 @@ class FxSoundBackend:
             f"--balance={_clamp(getattr(profile, 'balance_db', 0.0), -20.0, 20.0):.1f}")
         # Effect levels ride the same invocation so the five sliders hear
         # their changes live too. Re-sending an unchanged value is a no-op
-        # for the application and keeps the push path uniform.
+        # for the application and keeps the push path uniform. The names on
+        # the wire are the CLI's; the *values* are looked up on the profile's
+        # canonical attribute names (``clarity``/``dynamic_boost``) - a
+        # getattr on the CLI spellings read attributes the profile does not
+        # have, silently pushing 0.0 and stomping whatever the user had set
+        # (verified live: clarity and dynamic boost reset on every drag).
         arguments.append("--set_effect=" + ",".join(
-            f"{name}:{_clamp(getattr(profile, name, 0.0), 0.0, 10.0):.2f}"
-            for name in ("bass", "fidelity", "ambience", "surround",
-                         "dynamicboost")))
+            f"{cli_name}:{_clamp(getattr(profile, attr, 0.0), 0.0, 10.0):.2f}"
+            for cli_name, attr in (
+                ("bass", "bass"),
+                ("fidelity", "clarity"),
+                ("ambience", "ambience"),
+                ("surround", "surround"),
+                ("dynamicboost", "dynamic_boost"),
+            )))
         return self._send(*arguments)
 
     # ---------------------------------------------------------- live push --

@@ -775,10 +775,12 @@ def test_apply_equalizer_once_is_a_single_invocation(monkeypatch):
     assert "--volume_leveling=1.0" in line
     assert "--balance=-2.0" in line
     # Effect levels ride the same invocation so the five sliders are live
-    # (this profile carries the dataclass defaults bass=5, surround=4).
+    # (this profile carries the dataclass defaults bass=5, clarity=5,
+    # surround=4, dynamic boost=2). The CLI names map from the profile's
+    # canonical attributes - fidelity comes from ``clarity``.
     assert "--set_effect=" in line
     assert "bass:5.00" in line and "surround:4.00" in line
-    assert "fidelity:0.00" in line and "dynamicboost:0.00" in line
+    assert "fidelity:5.00" in line and "dynamicboost:2.00" in line
 
 
 def test_request_live_push_coalesces_into_one_send(monkeypatch):
@@ -976,7 +978,7 @@ def test_tray_tooltip_covers_every_state_branch():
     assert len(tip) <= 127
 
 
-def test_toast_click_runs_callback_and_fade_removes_the_card():
+def test_toast_click_runs_callback_and_removes_the_card():
     import time as _time
     from ps3hub.ui.toast import ToastCenter
 
@@ -992,12 +994,61 @@ def test_toast_click_runs_callback_and_fade_removes_the_card():
         assert center.in_app_shown == 1
         card = center._overlay._toasts[0]
         card._clicked()
-        # Closing fades the card out over a few animation ticks; wait for
-        # the removal rather than racing it.
-        deadline = _time.monotonic() + 2
-        while _time.monotonic() < deadline and center._overlay._toasts:
-            root.update(); _time.sleep(0.02)
+        # The bookkeeping drops the card immediately; the library fades the
+        # window out on its own afterwards.
         assert clicked == [1] and not center._overlay._toasts
+        root.update()
+    finally:
+        center.shutdown()
+        root.withdraw()
+
+
+def test_toast_duplicate_restarts_instead_of_stacking():
+    from ps3hub.ui.toast import ToastCenter
+
+    root = _shared_root()
+    center = ToastCenter(root, "Hub")
+    try:
+        root.deiconify(); root.update()
+        # The overlay level directly: the router has its own coarser dedup
+        # (a 3-second silence window), so identical toasts closer together
+        # never reach the overlay through it.
+        overlay = center._overlay
+        assert overlay.show("Same", "body", "info")
+        root.update()
+        assert len(overlay._toasts) == 1
+        first = overlay._toasts[0]
+        assert overlay.show("Same", "body", "info")
+        root.update()
+        # Still one popup: the duplicate restarted the card instead of
+        # stacking a second one.
+        assert len(overlay._toasts) == 1
+        assert overlay._toasts[0] is not first
+        assert first.alive is False
+    finally:
+        center.shutdown()
+        root.withdraw()
+
+
+def test_toast_sweep_drops_cards_the_library_destroyed():
+    import time as _time
+    from ps3hub.ui.toast import ToastCenter
+
+    root = _shared_root()
+    center = ToastCenter(root, "Hub")
+    try:
+        root.deiconify(); root.update()
+        center.show("Vanishing", "body", "warn")
+        deadline = _time.monotonic() + 2
+        while _time.monotonic() < deadline and center.in_app_shown == 0:
+            root.update(); _time.sleep(0.02)
+        card = center._overlay._toasts[0]
+        # Simulate the library auto-dismissing and destroying its window on
+        # its own duration - it never announces that, so the pump's sweep
+        # must notice the dead window and drop the card.
+        card._toast.toplevel = None
+        center._overlay.sweep()
+        assert not center._overlay._toasts and not card.alive
     finally:
         center.shutdown()
         root.withdraw()

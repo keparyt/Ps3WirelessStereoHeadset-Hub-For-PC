@@ -234,3 +234,170 @@ class EQGraph(tk.Canvas):
         self._gains[self._drag_index] = value
         self.redraw()
         self._on_change(self._drag_index, value)
+
+
+class EQKnobRow(tk.Frame):
+    """One circular knob per equalizer band, the way FxSound lays them out.
+
+    The graph shows the shape of the curve; the knob row is the fine control
+    under it. Each ring sweeps -12..+12 dB clockwise (0 dB at the top), the
+    frequency label sits above its ring and the band's value below, so the
+    row reads as an extension of the graph's frequency axis.
+
+    Dragging is *relative* - vertical movement from where the press landed,
+    half a decibel per few pixels - not jump-to-position, which is how
+    hardware knobs behave and what keeps small adjustments precise. Double-
+    click flattens one band, mirroring the graph.
+    """
+
+    KNOB = 34            # ring diameter, px
+    PAD_X = 4            # gap between neighbouring knobs
+    LABEL_H = 14         # frequency label strip above the ring
+    VALUE_H = 14         # value strip below the ring
+    PX_PER_HALF_DB = 5   # drag distance for one 0.5 dB step
+
+    def __init__(self, master, on_change: Callable[[int, float], None],
+                 bg: str = PANEL) -> None:
+        super().__init__(master, bg=bg)
+        self._on_change = on_change
+        self._bg = bg
+        self._frequencies: list[float] = []
+        self._gains: list[float] = []
+        self._enabled = True
+        self._canvases: list[tk.Canvas] = []
+        self._drag_index: int | None = None
+        self._drag_start_y = 0.0
+        self._drag_start_gain = 0.0
+
+    # ------------------------------------------------------------- state --
+
+    def set_bands(self, frequencies: list[float], gains: list[float],
+                  enabled: bool | None = None) -> None:
+        """Mirror the graph's bands. Does not fire ``on_change``."""
+        count = min(len(frequencies), len(gains))
+        self._frequencies = [float(f) for f in frequencies[:count]]
+        self._gains = [max(GAIN_MIN_DB, min(GAIN_MAX_DB, float(g)))
+                       for g in gains[:count]]
+        if enabled is not None:
+            self._enabled = enabled
+        if len(self._canvases) != count:
+            self._build()
+        self.redraw()
+
+    def set_enabled(self, enabled: bool) -> None:
+        self._enabled = enabled
+        self.redraw()
+
+    @property
+    def gains(self) -> list[float]:
+        return list(self._gains)
+
+    # ------------------------------------------------------------- layout --
+
+    def _build(self) -> None:
+        for canvas in self._canvases:
+            canvas.destroy()
+        self._canvases = []
+        size = self.KNOB + 2 * self.PAD_X
+        height = self.LABEL_H + self.KNOB + self.VALUE_H
+        for index in range(len(self._gains)):
+            canvas = tk.Canvas(self, width=size, height=height,
+                               bg=self._bg, highlightthickness=0, bd=0,
+                               cursor="hand2")
+            canvas.grid(row=0, column=index)
+            canvas.bind("<Button-1>", self._press)
+            canvas.bind("<B1-Motion>", self._drag)
+            canvas.bind("<ButtonRelease-1>", self._release)
+            canvas.bind("<Double-Button-1>", self._reset_point)
+            self._canvases.append(canvas)
+
+    # ------------------------------------------------------------ drawing --
+
+    @staticmethod
+    def _angle(gain: float) -> float:
+        """Tk arc angle for a gain: 135° at -12 dB, 270° (top) at 0, 405° at +12."""
+        span = GAIN_MAX_DB - GAIN_MIN_DB
+        return 135.0 + (gain - GAIN_MIN_DB) / span * 270.0
+
+    def redraw(self) -> None:
+        font = fonts()
+        ring = self.KNOB - 6  # stroke sits just inside the canvas
+        for index, canvas in enumerate(self._canvases):
+            canvas.delete("all")
+            if index >= len(self._frequencies):
+                continue
+            freq = self._frequencies[index]
+            gain = self._gains[index]
+            cx = canvas.winfo_width() / 2.0 or (self.KNOB / 2.0 + self.PAD_X)
+            cy = self.LABEL_H + self.KNOB / 2.0
+            radius = ring / 2.0
+            colour = GOLD if self._enabled else IDLE
+            dim = MUTED if self._enabled else FAINT
+
+            canvas.create_text(cx, self.LABEL_H - 3, anchor="s",
+                               text=format_frequency(freq), fill=dim,
+                               font=font.tiny)
+            # The track, then the value arc on top: from -12 dB clockwise
+            # up to the current gain.
+            canvas.create_oval(cx - radius, cy - radius, cx + radius,
+                               cy + radius, outline=RIDGE, width=3)
+            extent = self._angle(gain) - 135.0
+            if extent > 0.5:
+                # Tk draws chords when the extent closes a full circle; a
+                # half-db-from-minimum boost still renders as a short arc.
+                canvas.create_arc(cx - radius, cy - radius, cx + radius,
+                                  cy + radius, start=135.0, extent=extent,
+                                  outline=colour, width=3, style="arc")
+            angle = math.radians(self._angle(gain))
+            needle_x = cx + radius * math.cos(angle)
+            needle_y = cy + radius * math.sin(angle)
+            canvas.create_oval(needle_x - 3, needle_y - 3,
+                               needle_x + 3, needle_y + 3,
+                               fill=colour, outline=self._bg)
+            canvas.create_text(cx, self.LABEL_H + self.KNOB + 2, anchor="n",
+                               text=format_gain(gain),
+                               fill=PAPER if self._enabled else FAINT,
+                               font=font.code_small)
+
+    # ------------------------------------------------------------- input --
+
+    def _index_of(self, canvas: tk.Canvas) -> int | None:
+        for index, candidate in enumerate(self._canvases):
+            if candidate is canvas:
+                return index
+        return None
+
+    def _press(self, event) -> None:
+        if not self._enabled:
+            return
+        index = self._index_of(event.widget)
+        if index is None:
+            return
+        self._drag_index = index
+        self._drag_start_y = float(event.y)
+        self._drag_start_gain = self._gains[index]
+
+    def _drag(self, event) -> None:
+        if self._drag_index is None or not self._enabled:
+            return
+        steps = (self._drag_start_y - event.y) / self.PX_PER_HALF_DB
+        value = self._drag_start_gain + round(steps) * 0.5
+        value = max(GAIN_MIN_DB, min(GAIN_MAX_DB, value))
+        if value == self._gains[self._drag_index]:
+            return
+        self._gains[self._drag_index] = value
+        self.redraw()
+        self._on_change(self._drag_index, value)
+
+    def _release(self, _event) -> None:
+        self._drag_index = None
+
+    def _reset_point(self, event) -> None:
+        """Double-click a knob to flatten just that band."""
+        if not self._enabled:
+            return
+        index = self._index_of(event.widget)
+        if index is not None and self._gains[index] != 0.0:
+            self._gains[index] = 0.0
+            self.redraw()
+            self._on_change(index, 0.0)

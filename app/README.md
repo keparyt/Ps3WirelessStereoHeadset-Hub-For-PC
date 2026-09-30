@@ -20,8 +20,17 @@ equalizer.
   a small card stacked at the bottom-right of the *screen* while the window is
   visible, and as a Windows toast when it is hidden in the tray or minimised.
   A Settings switch (**Always use Windows notifications**) forces the Windows
-  route even when the window is visible. Hovering a card pauses its
-  countdown; clicking it opens the Hub.
+  route even when the window is visible. Clicking a card opens the Hub.
+  In-app cards are rendered by [ttkbootstrap](https://ttkbootstrap.readthedocs.io/).
+* **EQ example presets.** A row of bundled one-click curves (Bass Maniac,
+  Trapmetal, lofi, Pop, ...) with descriptions, loaded straight into the
+  equalizer and FxSound without touching a stored preset.
+* **Per-band knobs and honest resets.** Under the curve, one knob per band
+  mirrors the equalizer graph for fine control (double-click flattens a band).
+  **Reset EQ** flattens the curve *and* the four EQ controls; **Reset
+  profile** restores the factory effect levels - and both push the result to
+  FxSound so its own sliders and per-band knobs follow. An **Enable FxSound
+  processing** toggle bypasses the DSP without losing your settings.
 * **Battery tray icon.** The tray shows a headset drawn in code, coloured by
   state: green when healthy, yellow below 30%, red below 15%, gold while
   charging, gray when the headset is away but the Hub keeps running.

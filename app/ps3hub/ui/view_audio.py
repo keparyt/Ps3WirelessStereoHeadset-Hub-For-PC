@@ -19,19 +19,50 @@ facade; no COM, no HID and no thread ownership leaks into the view.
 
 from __future__ import annotations
 
+import sys
 import time
 import tkinter as tk
 from dataclasses import replace as dataclass_replace
+from pathlib import Path
 from tkinter import messagebox as tkmessagebox
 from tkinter import ttk
 from typing import Any, Callable
 
 from ..applog import get_logger
 from .theme import ABYSS, FAINT, FAULT, GOLD, IDLE, LIVE, MUTED, PANEL, PAPER, WARN, fonts
-from .widget_eq import BAND_COUNTS, EQGraph
+from .widget_eq import BAND_COUNTS, EQGraph, EQKnobRow
+from ..audio.fac import default_band_frequencies
 from .widgets import Banner, Card, KeyValue, ScrollFrame, StatusPill
 
 log = get_logger("ui.audio")
+
+
+def _example_presets() -> list[tuple[str, str, Any]]:
+    """Bundled example presets: ``(display name, description, path)``.
+
+    They ship next to the package in ``EQExamples/``: one ``.fac`` curve per
+    example plus a ``.txt`` carrying its one-line description. Found beside
+    the sources in development and inside a PyInstaller bundle alike.
+    """
+    directories: list[Any] = []
+    bundled = getattr(sys, "_MEIPASS", None)
+    if bundled:
+        directories.append(Path(bundled) / "EQExamples")
+    directories.append(Path(__file__).resolve().parents[2] / "EQExamples")
+
+    for directory in directories:
+        if not directory.is_dir():
+            continue
+        examples: list[tuple[str, str, Any]] = []
+        for fac in sorted(directory.glob("*.fac")):
+            txt = fac.with_suffix(".txt")
+            try:
+                description = txt.read_text(encoding="utf-8").strip() if txt.exists() else ""
+            except OSError:
+                description = ""
+            examples.append((fac.stem, description, fac))
+        return examples
+    return []
 
 
 class _ProfileEcho:
@@ -82,6 +113,10 @@ class AudioView(tk.Frame):
         self._on_changed = on_changed
         self._suspend = False
         self._eq_loaded = False
+        # Until this monotonic time, ignore FxSound power echoes: the status
+        # written right after our own --power command still reports the old
+        # state, and mirroring it would flip the toggle straight back.
+        self._power_gate_until = 0.0
         # The most recent FxSound status the view knows about, plus whether
         # the FxSound features are currently unlocked.
         self._last_fx_status: Any = None
@@ -149,6 +184,18 @@ class AudioView(tk.Frame):
             "Windows and the Hub follows.",
         )
         self._audio_banner.pack(fill="x", pady=(8, 0))
+
+        # FxSound's own power switch: the DSP keeps every setting while
+        # bypassed, so this is a mute of the processing, not a reset.
+        power_row = tk.Frame(processing.body, bg=PANEL)
+        power_row.pack(fill="x", pady=(8, 0))
+        self._fx_power_var = tk.BooleanVar(value=True)
+        self._fx_power_check = ttk.Checkbutton(
+            power_row, text="Enable FxSound processing (bypass without losing "
+            "your settings)", variable=self._fx_power_var,
+            command=self._on_fx_power,
+        )
+        self._fx_power_check.pack(anchor="w")
 
         # Sending the headset's own endpoint to the front.
         output = tk.Frame(processing.body, bg=PANEL)
@@ -271,6 +318,11 @@ class AudioView(tk.Frame):
         self._eq_graph = EQGraph(body, self._on_band_dragged)
         self._eq_graph.pack(fill="x", pady=(10, 0))
 
+        # The fine control under the graph: one knob per band, mirroring the
+        # curve above. Knob drags feed the same handler as graph drags.
+        self._eq_knobs = EQKnobRow(body, self._on_band_dragged)
+        self._eq_knobs.pack(fill="x", pady=(10, 0))
+
         # The four controls FxSound puts beside its curve.
         grid = tk.Frame(body, bg=PANEL)
         grid.pack(fill="x", pady=(12, 0))
@@ -299,6 +351,29 @@ class AudioView(tk.Frame):
                     else f"{v.get():.1f} {unit}"),
             )
             self._eq_vars[key] = var
+
+        # Bundled example presets with their one-line descriptions.
+        self._examples = _example_presets()
+        if self._examples:
+            examples_row = tk.Frame(body, bg=PANEL)
+            examples_row.pack(fill="x", pady=(12, 0))
+            tk.Label(examples_row, text="Examples", bg=PANEL, fg=PAPER,
+                     font=font.base, anchor="w").pack(side="left")
+            self._example_var = tk.StringVar(value=self._examples[0][0])
+            self._example_box = ttk.Combobox(
+                examples_row, textvariable=self._example_var, state="readonly",
+                width=16, values=[name for name, _d, _p in self._examples])
+            self._example_box.pack(side="left", padx=(10, 0))
+            self._example_box.bind("<<ComboboxSelected>>",
+                                   self._on_example_description)
+            ttk.Button(examples_row, text="Load example",
+                       command=self._on_load_example).pack(side="left", padx=(8, 0))
+            self._example_description = tk.Label(
+                body, text="", bg=PANEL, fg=MUTED, font=font.small,
+                anchor="w", justify="left", wraplength=560,
+            )
+            self._example_description.pack(fill="x", pady=(4, 0))
+            self._on_example_description()
 
         # Presets: load, save, and file import/export.
         files = tk.Frame(body, bg=PANEL)
@@ -349,6 +424,7 @@ class AudioView(tk.Frame):
         self._fx_ui_enabled = ready
         state = "normal" if ready else "disabled"
         self._eq_graph.set_enabled(ready)
+        self._eq_knobs.set_enabled(ready)
         self._band_menu.configure(state=state)
         self._preset_box.configure(state=state)
         for button in (self._preset_load, self._preset_save,
@@ -497,6 +573,8 @@ class AudioView(tk.Frame):
             return
         if getattr(self._eq_graph, "_drag_index", None) is not None:
             return
+        if getattr(self._eq_knobs, "_drag_index", None) is not None:
+            return
         stamp = self._safe_stamp(engine)
         if stamp is None or stamp == self._mirror_stamp:
             return
@@ -592,6 +670,35 @@ class AudioView(tk.Frame):
 
     # --------------------------------------------------------------- events --
 
+    def _on_fx_power(self) -> None:
+        """Drive FxSound's power switch from the checkbox.
+
+        The status read back right after the command can still carry the old
+        state (the application answers asynchronously), so re-mirroring is
+        gated briefly - otherwise the poll would see the stale ``power`` and
+        snap the checkbox back.
+        """
+        if self._suspend:
+            return
+        engine = self._engine_provider()
+        if engine is None or not getattr(self._last_fx_status, "found", False):
+            # Nowhere to send it: snap the checkbox back to the real state.
+            self._suspend = True
+            self._fx_power_var.set(bool(getattr(self._last_fx_status, "power", False)))
+            self._suspend = False
+            return
+        wanted = bool(self._fx_power_var.get())
+        try:
+            engine.fxsound_set_power(wanted)
+        except AttributeError:
+            pass
+        self._power_gate_until = time.monotonic() + 2.5
+        if getattr(self._last_fx_status, "running", False):
+            status = engine.fxsound_status(force=True)
+            if getattr(status, "running", False):
+                self._last_fx_status = status
+                self._render_fxsound(status)
+
     def _on_toggle(self) -> None:
         if self._suspend:
             return
@@ -613,6 +720,16 @@ class AudioView(tk.Frame):
             return
         profile = engine.profile_for(endpoint.device_id, endpoint.name)
         from ..audio.profiles import AudioProfile
+        # The knob row and the graph share one source of truth: a knob drag
+        # already updated the graph via _on_band_dragged, so read the gains
+        # back from the graph rather than from the profile, which a running
+        # mirror may have changed under us mid-edit.
+        knob_gains = self._eq_knobs.gains
+        eq = list(profile.eq)
+        if knob_gains:
+            frequencies = [f for f, _g in eq] or list(
+                default_band_frequencies(len(knob_gains)))
+            eq = list(zip(frequencies[:len(knob_gains)], knob_gains))
         profile = dataclass_replace(
             profile,
             bass=self._effect_vars["bass"].get(),
@@ -621,6 +738,7 @@ class AudioView(tk.Frame):
             surround=self._effect_vars["surround"].get(),
             dynamic_boost=self._effect_vars["dynamic_boost"].get(),
             master_gain_db=self._gain_var.get(),
+            eq=eq,
         )
         engine.set_profile(profile)
         self._on_changed()
@@ -628,17 +746,46 @@ class AudioView(tk.Frame):
         self._request_live_push()
 
     def _on_reset_profile(self) -> None:
-        engine = self._engine_provider()
-        if engine is None:
-            return
-        endpoint = engine.default_endpoint()
-        if endpoint is None:
+        """Restore the factory profile and make every surface agree.
+
+        The new profile is written first, then the sliders, the gain, the
+        graph and the knob row are re-drawn from it with the change handlers
+        suspended - each ``var.set()`` fires its scale's command, and an
+        unsuspended set would immediately re-commit the old value over the
+        reset. Finally the curve goes out to FxSound, so its own sliders and
+        per-band knobs follow instead of silently keeping the previous
+        settings (observed live: the Hub reset while FxSound did not).
+        """
+        engine, profile = self._active_profile()
+        if engine is None or profile is None:
             return
         from ..audio.profiles import AudioProfile
-        engine.set_profile(AudioProfile(device_id=endpoint.device_id,
-                                        device_name=endpoint.name))
+        fresh = AudioProfile(device_id=profile.device_id,
+                             device_name=profile.device_name)
+        engine.set_profile(fresh)
+        count = fresh.eq_bands
+        frequencies = list(default_band_frequencies(count))
+        flat = [0.0] * count
+        self._suspend = True
+        try:
+            self._effect_vars["bass"].set(fresh.bass)
+            self._effect_vars["clarity"].set(fresh.clarity)
+            self._effect_vars["ambience"].set(fresh.ambience)
+            self._effect_vars["surround"].set(fresh.surround)
+            self._effect_vars["dynamic_boost"].set(fresh.dynamic_boost)
+            self._gain_var.set(fresh.master_gain_db)
+            for key, value in (("master_gain_db", 0.0), ("volume_leveling_db", 0.0),
+                               ("filter_q", 1.0), ("balance_db", 0.0)):
+                self._eq_vars[key].set(value)
+            self._band_var.set(f"{count} Bands")
+        finally:
+            self._suspend = False
+        self._eq_graph.set_curve(frequencies, flat, enabled=self._fx_ui_enabled)
+        self._eq_knobs.set_bands(frequencies, flat)
+        self._refresh_eq_summary(list(zip(frequencies, flat)))
+        self._request_live_push()
         self._on_changed()
-        self.refresh()
+        self._eq_banner.set("Profile restored to the factory defaults.", "info")
 
     # ----------------------------------------------------- equalizer events --
 
@@ -678,6 +825,9 @@ class AudioView(tk.Frame):
         gains[index] = gain_db
         bands = list(zip(frequencies[:count], gains[:count]))
         self._commit_eq(eq=bands)
+        # Keep the knob row on the curve the graph now shows.
+        self._eq_knobs.set_bands(frequencies[:count], gains[:count])
+        self._request_live_push()
         self._refresh_eq_summary(bands)
         # Hear it while dragging: the curve goes to FxSound live.
         self._request_live_push()
@@ -692,12 +842,21 @@ class AudioView(tk.Frame):
         self._commit_eq(eq_bands=count,
                         eq=[(freq, 0.0) for freq in frequencies])
         self._eq_graph.set_curve(frequencies, [0.0] * count)
+        self._eq_knobs.set_bands(frequencies, [0.0] * count)
         self._refresh_eq_summary([(f, 0.0) for f in frequencies])
         self._request_live_push()
 
     def _on_eq_control(self, key: str) -> None:
         self._commit_eq(**{key: self._eq_vars[key].get()})
         self._request_live_push()
+
+    def _on_knob_dragged(self, index: int, gain_db: float) -> None:
+        """A knob turned: route it through the graph's drag handler.
+
+        The graph owns the curve - redrawing it here keeps the two in lock-
+        step without either widget knowing about the other.
+        """
+        self._on_band_dragged(index, gain_db)
 
     def _request_live_push(self) -> None:
         """Push the current curve to FxSound as the user moves a control.
@@ -729,19 +888,34 @@ class AudioView(tk.Frame):
             self._pushed_not_flat = any(abs(g) >= 0.05 for g in gains)
 
     def _on_reset_eq(self) -> None:
+        """Flatten the curve and the four EQ controls - the full block.
+
+        The slider vars are set with the change handlers suspended: each set
+        fires its scale's command, and filter_q's would otherwise re-commit
+        the pre-reset value over the reset (leaving the "reset" Q at 0.0,
+        which FxSound then refuses). The flat curve goes out to FxSound, so
+        its own per-band knobs clear too.
+        """
         _, profile = self._active_profile()
         if profile is None:
             return
-        from ..audio.fac import default_band_frequencies
         count = profile.eq_bands or 10
-        frequencies = default_band_frequencies(count)
+        frequencies = list(default_band_frequencies(count))
+        flat = [0.0] * count
         self._commit_eq(eq=[(freq, 0.0) for freq in frequencies],
                         master_gain_db=0.0, volume_leveling_db=0.0,
                         filter_q=1.0, balance_db=0.0)
-        self._eq_graph.set_curve(frequencies, [0.0] * count)
-        for key in self._eq_vars:
-            self._eq_vars[key].set(0.0)
-        self._refresh_eq_summary([(freq, 0.0) for freq in frequencies])
+        self._suspend = True
+        try:
+            self._eq_vars["master_gain_db"].set(0.0)
+            self._eq_vars["volume_leveling_db"].set(0.0)
+            self._eq_vars["filter_q"].set(1.0)
+            self._eq_vars["balance_db"].set(0.0)
+        finally:
+            self._suspend = False
+        self._eq_graph.set_curve(frequencies, flat, enabled=self._fx_ui_enabled)
+        self._eq_knobs.set_bands(frequencies, flat)
+        self._refresh_eq_summary(list(zip(frequencies, flat)))
         self._request_live_push()
 
     def _refresh_eq_summary(self, bands) -> None:
@@ -775,6 +949,62 @@ class AudioView(tk.Frame):
         elif names and not self._preset_var.get():
             self._preset_var.set(names[0])
 
+    def _on_example_description(self, _event=None) -> None:
+        """Show the selected example's one-line description."""
+        label = self._example_var.get()
+        for name, description, _path in self._examples:
+            if name == label:
+                self._example_description.configure(
+                    text=description or f"{name} — a bundled example curve.")
+                return
+
+    def _on_load_example(self) -> None:
+        """Load the selected example curve into the audio path.
+
+        With FxSound running the curve goes to it directly (no preset
+        selection, the same route as a file import); otherwise the Hub's own
+        DSP takes it. The example's name is kept as profile metadata.
+        """
+        label = self._example_var.get()
+        example = next(((n, d, p) for n, d, p in self._examples if n == label),
+                       None)
+        if example is None:
+            return
+        _name, _description, path = example
+        engine, profile = self._active_profile()
+        if engine is None or profile is None:
+            return
+        from ..audio.profiles import AudioProfile
+        imported, error = AudioProfile.from_fac(
+            path, profile.device_id, profile.device_name)
+        if error and not imported.eq:
+            self._eq_banner.set(f"Could not read that example: {error}", "error")
+            return
+        imported.preset_name = label
+        if getattr(self._last_fx_status, "running", False):
+            status = engine.apply_curve_via_fxsound(imported)
+            if status.error:
+                engine.set_profile(imported)
+                self._eq_banner.set(
+                    f"Loaded “{label}” on the Hub's DSP, but FxSound did not "
+                    f"accept it: {status.error}", "warn")
+            else:
+                # Store the imported profile so the Hub matches what was
+                # just pushed, and arm the echo window through the normal
+                # live-push path (the status read back right after a push
+                # can still carry the previous curve).
+                engine.set_profile(imported)
+                self._request_live_push()
+                self._refresh_preset_list()
+                self._eq_banner.set(
+                    f"Loaded “{label}” into FxSound.", "info")
+        else:
+            engine.set_profile(imported)
+            self._eq_banner.set(
+                f"Loaded “{label}” on the Hub's own DSP.", "info")
+        self._on_changed()
+        self._show_profile_eq(imported)
+
     def _on_pick_preset(self, _event=None) -> None:
         name = self._preset_var.get()
         engine = self._engine_provider()
@@ -807,6 +1037,7 @@ class AudioView(tk.Frame):
             self._band_var.set(f"{int(eq.get('num_bands', len(bands)))} Bands")
             self._eq_graph.set_curve(frequencies, gains,
                                      enabled=self._fx_ui_enabled)
+            self._eq_knobs.set_bands(frequencies, gains)
             for key in ("master_gain_db", "volume_leveling_db",
                         "filter_q", "balance_db"):
                 if key in self._eq_vars and key in eq:
@@ -876,10 +1107,16 @@ class AudioView(tk.Frame):
         # Hand the imported curve to the running FxSound instance - the
         # curve only, never a preset selection (selecting the file's named
         # preset would reload the application's stored copy over the curve
-        # we just pushed). Then read back what actually applied.
+        # we just pushed).
         status = engine.apply_curve_via_fxsound(imported)
         if status.error:
             engine.set_profile(imported)
+        else:
+            # Store the imported profile so the Hub matches what was pushed,
+            # and arm the echo window via the normal live-push path.
+            engine.set_profile(imported)
+            self._request_live_push()
+            self._refresh_preset_list()
         self._on_changed()
         self._show_profile_eq(imported)
         if error:
@@ -889,12 +1126,6 @@ class AudioView(tk.Frame):
                 f"Loaded “{imported.preset_name or imported.name}”, but "
                 f"FxSound did not accept it: {status.error}", "warn")
         else:
-            # Keep the file's name as metadata, but adopt the *applied*
-            # curve FxSound reports so the view shows reality.
-            self._last_fx_status = status
-            self._mirror_stamp = self._safe_stamp(engine)
-            self._fxsig = self._fx_signature(status)
-            self._refresh_preset_list(status)
             self._eq_banner.set(
                 f"Loaded “{imported.preset_name or imported.name}” into "
                 "FxSound.", "info")
@@ -936,6 +1167,7 @@ class AudioView(tk.Frame):
             self._band_var.set(f"{count} Bands")
             self._eq_graph.set_curve(frequencies, gains,
                                      enabled=self._fx_ui_enabled)
+            self._eq_knobs.set_bands(frequencies, gains)
             for key in self._eq_vars:
                 self._eq_vars[key].set(float(getattr(profile, key)))
         finally:
@@ -1127,6 +1359,15 @@ class AudioView(tk.Frame):
     def _render_fxsound(self, status: Any) -> None:
         found = bool(getattr(status, "found", False))
         running = bool(getattr(status, "running", False))
+        # The checkbox mirrors the application's power unless our own toggle
+        # is still settling (the echo of the command can carry the old state).
+        if time.monotonic() >= self._power_gate_until:
+            was_suspended = self._suspend
+            self._suspend = True
+            self._fx_power_var.set(bool(getattr(status, "power", False)) if found else False)
+            self._suspend = was_suspended
+        self._fx_power_check.configure(
+            state="normal" if found else "disabled")
         if not found:
             self._fxsound_pill.set("Not installed", IDLE)
             self._fxsound_detail.configure(

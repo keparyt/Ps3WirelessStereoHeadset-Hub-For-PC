@@ -223,6 +223,14 @@ class AudioEngine:
         """Point the FxSound application at a specific output device."""
         return self._fxsound.set_output(device_name)
 
+    def fxsound_set_power(self, enabled: bool) -> bool:
+        """Turn FxSound's processing on or off (its own power switch).
+
+        Bypassing keeps every setting intact, so this is a mute of the DSP,
+        not a reset of it.
+        """
+        return self._fxsound.set_power(bool(enabled))
+
     def fxsound_launch(self, timeout: float = 10.0) -> FxSoundStatus:
         """Start FxSound when it is not running and wait for it to answer.
 

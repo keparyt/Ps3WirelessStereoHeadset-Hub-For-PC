@@ -209,9 +209,19 @@ def apply(root) -> ttk.Style:
                     arrowcolor=MUTED, borderwidth=1, padding=5)
     style.map("TSpinbox", bordercolor=[("focus", GOLD), ("!focus", RIDGE)])
 
-    # Horizontal variants used by ttk.Scale on the Audio page.
-    style.configure("Horizontal.TScale", background=PANEL, troughcolor=DECK,
-                    bordercolor=PANEL, lightcolor=DECK, darkcolor=DECK)
+    # Sliders (ttk.Scale): a light thumb the user can actually find on the
+    # dark surfaces, gold while they are on it - gold stays an active-state
+    # colour per the palette rules. The trough stays a quiet recessed groove.
+    style.configure("TScale", background=PAPER, troughcolor=DECK,
+                    bordercolor=RIDGE, lightcolor=PAPER, darkcolor=PAPER,
+                    gripcount=0)
+    style.map("TScale",
+              background=[("pressed", GOLD), ("active", GOLD),
+                          ("disabled", FAINT)],
+              lightcolor=[("pressed", GOLD), ("active", GOLD),
+                          ("disabled", FAINT)],
+              darkcolor=[("pressed", GOLD), ("active", GOLD),
+                         ("disabled", FAINT)])
 
     style.configure("TSeparator", background=RIDGE)
 

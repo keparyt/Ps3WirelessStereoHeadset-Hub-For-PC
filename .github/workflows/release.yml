@@ -28,7 +28,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r app/requirements.txt numpy pyinstaller
+          python -m pip install -r app/requirements.txt numpy pyinstaller pytest
 
       - name: Check the tag matches APP_VERSION
         shell: pwsh

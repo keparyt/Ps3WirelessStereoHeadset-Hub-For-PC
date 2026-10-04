@@ -103,9 +103,17 @@ def default_band_frequencies(count: int) -> list[float]:
         return [25.0, 40.0, 63.0, 100.0, 160.0, 250.0, 400.0, 630.0, 1000.0,
                 1600.0, 2500.0, 4000.0, 6300.0, 10000.0, 16000.0]
     if count == 20:
-        return [20.0, 31.25, 40.0, 50.0, 63.0, 80.0, 100.0, 125.0, 160.0,
-                200.0, 250.0, 315.0, 400.0, 500.0, 630.0, 800.0, 1000.0,
-                1250.0, 16000.0, 20000.0]
+        # A steady two-thirds-octave ladder: every consecutive pair of
+        # ratios alternates ~1.6 / 1.25 (one octave per two bands), so the
+        # points sit evenly on a logarithmic axis. Read back from a real
+        # FxSound-authored preset written with "20: Number of EQ Bands"
+        # (EQExamples/Bass Maniac.fac). The previous table stepped evenly
+        # only up to 1250 Hz and then jumped straight to 16000/20000 Hz,
+        # which left the graph's top end empty and bunched the last knobs
+        # against the right edge.
+        return [20.0, 31.5, 40.0, 63.0, 80.0, 125.0, 160.0, 250.0, 315.0,
+                500.0, 630.0, 1000.0, 1250.0, 2000.0, 2500.0, 4000.0,
+                5000.0, 8000.0, 10000.0, 16000.0]
     return [20.0, 25.0, 31.25, 40.0, 50.0, 63.0, 80.0, 100.0, 125.0, 160.0,
             200.0, 250.0, 315.0, 400.0, 500.0, 630.0, 800.0, 1000.0, 1250.0,
             1600.0, 2000.0, 2500.0, 3150.0, 4000.0, 5000.0, 6300.0, 8000.0,

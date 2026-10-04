@@ -65,6 +65,12 @@ class EQGraph(tk.Canvas):
     """
 
     HEIGHT = 190
+    #: The plot area's horizontal margins inside the canvas. The knob row
+    #: reads these through :meth:`column_positions`, so its cells can be cut
+    #: to exactly the same axis - the constants are shared by both paths and
+    #: must never be specialised in one of them.
+    AXIS_LEFT = 30.0
+    AXIS_RIGHT_MARGIN = 12.0
 
     def __init__(self, master, on_change: Callable[[int, float], None],
                  bg: str = PANEL) -> None:
@@ -104,6 +110,33 @@ class EQGraph(tk.Canvas):
     def gains(self) -> list[float]:
         return list(self._gains)
 
+    # ------------------------------------------------------------- axis --
+
+    def column_positions(self, width: float | None = None) -> list[float]:
+        """The x centre of every band point, using redraw's own axis math.
+
+        The knob row under the graph cuts its grid columns at the midpoints
+        between these positions, so each knob sits exactly under its graph
+        point instead of wherever an even split happens to drop it. Takes
+        ``width`` explicitly so a caller can align against its own width
+        (the row and the canvas are the same width in the card, but the
+        value is computed from whoever is asking).
+        """
+        if width is None:
+            width = self.winfo_width()
+        if width <= 1 or not self._frequencies:
+            return []
+        left, right = self.AXIS_LEFT, width - self.AXIS_RIGHT_MARGIN
+        if right <= left:
+            return []
+        low = min(self._frequencies)
+        high = max(self._frequencies)
+        if high <= low:
+            high = low * 2.0
+        log_low, log_high = math.log10(low), math.log10(high)
+        return [left + (math.log10(f) - log_low) / (log_high - log_low) * (right - left)
+                for f in self._frequencies]
+
     # ------------------------------------------------------------ drawing --
 
     def redraw(self) -> None:
@@ -113,7 +146,7 @@ class EQGraph(tk.Canvas):
         if width <= 1 or height <= 1 or not self._frequencies:
             return
 
-        left, right = 30.0, width - 12.0
+        left, right = self.AXIS_LEFT, width - self.AXIS_RIGHT_MARGIN
         top, bottom = 16.0, height - 24.0
         if bottom <= top:
             return
@@ -237,21 +270,25 @@ class EQGraph(tk.Canvas):
 
 
 class EQKnobRow(tk.Frame):
-    """One circular knob per equalizer band, the way FxSound lays them out.
+    """One circular knob per equalizer band, aligned with the graph above.
 
-    The graph shows the shape of the curve; the knob row is the fine control
-    under it. Each ring sweeps -12..+12 dB clockwise (0 dB at the top), the
-    frequency label sits above its ring and the band's value below, so the
-    row reads as an extension of the graph's frequency axis.
+    The knob row is the fine control under the response graph, and it is
+    drawn on **one** canvas rather than a grid of equal cells: the graph
+    places its points on a logarithmic frequency axis, so equal-width cells
+    cannot line up with them. The row asks the graph for its exact point
+    positions (``EQGraph.column_positions``) and cuts its own hit columns
+    at the midpoints between neighbours, so every knob's centre sits
+    exactly under its band's point at any band count.
 
-    Dragging is *relative* - vertical movement from where the press landed,
-    half a decibel per few pixels - not jump-to-position, which is how
-    hardware knobs behave and what keeps small adjustments precise. Double-
-    click flattens one band, mirroring the graph.
+    Each ring sweeps -12..+12 dB clockwise (0 dB at the top), the frequency
+    label sits above its ring and the band's value below. Dragging is
+    *relative* - vertical movement from where the press landed, half a
+    decibel per few pixels - which keeps small adjustments precise.
+    Double-click flattens one band, mirroring the graph.
     """
 
     KNOB = 34            # ring diameter, px
-    PAD_X = 4            # gap between neighbouring knobs
+    PAD_X = 4            # minimum gap between neighbouring knobs
     LABEL_H = 14         # frequency label strip above the ring
     VALUE_H = 14         # value strip below the ring
     PX_PER_HALF_DB = 5   # drag distance for one 0.5 dB step
@@ -264,10 +301,36 @@ class EQKnobRow(tk.Frame):
         self._frequencies: list[float] = []
         self._gains: list[float] = []
         self._enabled = True
-        self._canvases: list[tk.Canvas] = []
+        self._graph: EQGraph | None = None
+        # Exact knob centre per band (the graph's own log-axis positions).
+        self._positions: list[float] = []
+        # Hit column per band: (x0, x1) across the row's canvas.
+        self._columns: list[tuple[float, float]] = []
         self._drag_index: int | None = None
         self._drag_start_y = 0.0
         self._drag_start_gain = 0.0
+        self._knob_cy = self.LABEL_H + self.KNOB / 2.0
+        self._canvas = tk.Canvas(
+            self, height=self.LABEL_H + self.KNOB + self.VALUE_H,
+            bg=bg, highlightthickness=0, bd=0, cursor="hand2")
+        self._canvas.pack(fill="both", expand=True)
+        self._canvas.bind("<Configure>", lambda _e: self._relayout())
+        self._canvas.bind("<Button-1>", self._press)
+        self._canvas.bind("<B1-Motion>", self._drag)
+        self._canvas.bind("<ButtonRelease-1>", self._release)
+        self._canvas.bind("<Double-Button-1>", self._reset_point)
+
+    # ------------------------------------------------------------ wiring --
+
+    def bind_graph(self, graph: "EQGraph") -> None:
+        """Take the column geometry from ``graph`` and keep following it.
+
+        Alignment is the whole point of this row: the graph's Configure
+        redraws change nothing here (the positions are derived, never
+        cached), while the row's own Configure re-cuts its columns, so a
+        window resize keeps every knob under its point.
+        """
+        self._graph = graph
 
     # ------------------------------------------------------------- state --
 
@@ -280,13 +343,12 @@ class EQKnobRow(tk.Frame):
                        for g in gains[:count]]
         if enabled is not None:
             self._enabled = enabled
-        if len(self._canvases) != count:
-            self._build()
-        self.redraw()
+        self._relayout()
 
     def set_enabled(self, enabled: bool) -> None:
         self._enabled = enabled
-        self.redraw()
+        self._canvas.configure(cursor="hand2" if enabled else "arrow")
+        self._relayout()
 
     @property
     def gains(self) -> list[float]:
@@ -294,26 +356,71 @@ class EQKnobRow(tk.Frame):
 
     # ------------------------------------------------------------- layout --
 
-    def _build(self) -> None:
-        for canvas in self._canvases:
-            canvas.destroy()
-        self._canvases = []
-        size = self.KNOB + 2 * self.PAD_X
-        height = self.LABEL_H + self.KNOB + self.VALUE_H
-        for index in range(len(self._gains)):
-            canvas = tk.Canvas(self, width=size, height=height,
-                               bg=self._bg, highlightthickness=0, bd=0,
-                               cursor="hand2")
-            canvas.grid(row=0, column=index, sticky="ew")
-            canvas.bind("<Button-1>", self._press)
-            canvas.bind("<B1-Motion>", self._drag)
-            canvas.bind("<ButtonRelease-1>", self._release)
-            canvas.bind("<Double-Button-1>", self._reset_point)
-            self._canvases.append(canvas)
-        # Stretch to the card's width: the per-band cells share the extra
-        # space, so the row spans the graph above it at every band count
-        # instead of stopping at 42 px per knob.
-        self.columnconfigure(tuple(range(len(self._gains))), weight=1)
+    def _relayout(self, width: float | None = None) -> None:
+        """Re-cut the hit columns from the graph's axis and redraw.
+
+        Runs on every band change, every resize of either widget, and on
+        every enable/disable - it is cheap (arithmetic only) and it is what
+        keeps the knobs glued to the curve at every band count. ``width``
+        can be passed explicitly (tests, or a caller that already knows the
+        size); it defaults to the canvas's laid-out width.
+        """
+        count = len(self._frequencies)
+        if not count:
+            self._columns = []
+            self._canvas.delete("all")
+            return
+        if width is None:
+            width = self._canvas.winfo_width()
+        if width <= 1:
+            # Not laid out yet; the Configure event will call back in.
+            return
+        # Alignment source of truth: the graph's own log-axis positions.
+        if self._graph is not None:
+            positions = self._graph.column_positions(width)
+            if len(positions) == count:
+                self._positions = positions
+                self._columns = self._cut_columns(positions, width)
+                self.redraw()
+                return
+        # No graph bound (tests, or a row used standalone): even spacing
+        # with the same column rule, so the row still behaves sanely.
+        step = width / count
+        positions = [(i + 0.5) * step for i in range(count)]
+        self._positions = positions
+        self._columns = self._cut_columns(positions, width)
+        self.redraw()
+
+    @staticmethod
+    def _cut_columns(positions: list[float], width: float) -> list[tuple[float, float]]:
+        """Split the row at the midpoints between neighbouring knobs.
+
+        Interior edges are the halfway points between neighbours, so each
+        knob owns the span around its centre; the outer edges extend by
+        *reflection* (half a neighbour gap beyond the end point) and are
+        deliberately NOT clamped to the canvas, so clicks between the
+        canvas edge and the first/last point still land on the right band.
+        The columns are hit areas only: the knobs themselves are drawn at
+        the exact graph positions (``self._positions``), which is what
+        puts every ring directly under its point on the log axis - a
+        midpoint column is only centred on its point when the spacing is
+        uniform, and the log axis is deliberately not.
+        """
+        columns: list[tuple[float, float]] = []
+        last = len(positions) - 1
+        for index, centre in enumerate(positions):
+            if index == 0:
+                gap = positions[1] - centre if last > 0 else width
+                x0 = centre - gap / 2.0
+            else:
+                x0 = (positions[index - 1] + centre) / 2.0
+            if index == last:
+                gap = centre - positions[last - 1] if last > 0 else width
+                x1 = centre + gap / 2.0
+            else:
+                x1 = (centre + positions[index + 1]) / 2.0
+            columns.append((x0, x1))
+        return columns
 
     # ------------------------------------------------------------ drawing --
 
@@ -324,26 +431,34 @@ class EQKnobRow(tk.Frame):
         return 135.0 + (gain - GAIN_MIN_DB) / span * 270.0
 
     def redraw(self) -> None:
+        """Draw every knob at its column centre on the row's one canvas."""
+        canvas = self._canvas
+        canvas.delete("all")
         font = fonts()
-        ring = self.KNOB - 6  # stroke sits just inside the canvas
-        for index, canvas in enumerate(self._canvases):
-            canvas.delete("all")
-            if index >= len(self._frequencies):
-                continue
-            freq = self._frequencies[index]
-            gain = self._gains[index]
-            # Cells stretch with the card; draw centred in whatever width
-            # the canvas actually has (zero before the first layout).
-            width = canvas.winfo_width()
-            cx = width / 2.0 if width > 1 else (self.KNOB / 2.0 + self.PAD_X)
-            cy = self.LABEL_H + self.KNOB / 2.0
-            radius = ring / 2.0
-            colour = GOLD if self._enabled else IDLE
-            dim = MUTED if self._enabled else FAINT
+        ring = self.KNOB - 6  # stroke sits just inside the box
+        radius = ring / 2.0
+        cy = self._knob_cy
+        colour = GOLD if self._enabled else IDLE
+        dim = MUTED if self._enabled else FAINT
+        last = len(self._positions) - 1
+        for index, (freq, gain) in enumerate(
+                zip(self._frequencies, self._gains)):
+            if index >= len(self._positions):
+                return
+            x0, x1 = self._columns[index] if index < len(self._columns) \
+                else (0.0, 0.0)
+            # The knob goes exactly under its graph point; the column only
+            # decides what a click hits.
+            cx = self._positions[index]
+            if 0 < index < last and x1 - x0 < self.KNOB + self.PAD_X:
+                # Cramped (31 bands on a narrow card): nudge the drawing
+                # inside its column rather than shrink the rings, so the
+                # labels stay readable; the hit columns stay untouched.
+                cx = max(x0 + radius, min(x1 - radius, cx))
 
             canvas.create_text(cx, self.LABEL_H - 3, anchor="s",
                                text=format_frequency(freq), fill=dim,
-                               font=font.tiny, width=max(width, self.KNOB) - 4)
+                               font=font.tiny, width=max(x1 - x0, self.KNOB) - 4)
             # The track, then the value arc on top: from -12 dB clockwise
             # up to the current gain.
             canvas.create_oval(cx - radius, cy - radius, cx + radius,
@@ -369,15 +484,27 @@ class EQKnobRow(tk.Frame):
     # ------------------------------------------------------------- input --
 
     def _index_of(self, canvas: tk.Canvas) -> int | None:
-        for index, candidate in enumerate(self._canvases):
-            if candidate is canvas:
+        """The band whose hit column contains the press, or None.
+
+        With the row on one canvas the column list *is* the input map; the
+        method keeps its historical (widget-based) shape, with the press x
+        parked on the widget by ``_press``.
+        """
+        if canvas is not self._canvas:
+            return None
+        x = getattr(canvas, "_press_x", None)
+        if x is None:
+            return None
+        for index, (x0, x1) in enumerate(self._columns):
+            if x0 <= x < x1:
                 return index
-        return None
+        return len(self._columns) - 1 if self._columns else None
 
     def _press(self, event) -> None:
         if not self._enabled:
             return
-        index = self._index_of(event.widget)
+        self._canvas._press_x = float(event.x)
+        index = self._index_of(self._canvas)
         if index is None:
             return
         self._drag_index = index

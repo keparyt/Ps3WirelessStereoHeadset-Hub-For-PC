@@ -548,7 +548,20 @@ class HubApp(tk.Tk):
                 )
 
     def _refresh(self) -> None:
+        """The 160 ms UI tick. The Audio page pre-syncs from FxSound once
+        per visit, on its first tick after being opened (load-only: the
+        application's settings are read into the Hub, never pushed back)."""
         state = self._service.snapshot()
+
+        if self._current == "audio":
+            try:
+                self._audio_view.on_page_open()
+            except Exception:
+                log.exception("Audio page pre-sync failed")
+        else:
+            # Every visit to the Audio page pre-syncs from FxSound, so
+            # leaving the page re-arms the next visit's sync.
+            self._audio_view.on_page_closed()
 
         if self._tray_mode:
             headset_linked = state.headset_linked

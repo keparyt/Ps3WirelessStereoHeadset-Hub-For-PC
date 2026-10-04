@@ -42,7 +42,7 @@ _STATUS_SETTLE_SECONDS = 2.5
 DOWNLOAD_URL = "https://www.fxsound.com/download"
 
 #: Documented CLI effect names and their allowed ranges (0.0-10.0).
-_FXound_EFFECT_KEYS = {
+_FXSOUND_EFFECT_KEYS = {
     "bass": ("bass", "bassboost", "bass_boost"),
     "clarity": ("fidelity", "clarity"),
     "ambience": ("ambience",),
@@ -62,16 +62,86 @@ if IS_WINDOWS:
     from ctypes import wintypes as _wintypes
 
     _focus_user32 = _ctypes.WinDLL("user32", use_last_error=True)
+    _focus_kernel32 = _ctypes.WinDLL("kernel32", use_last_error=True)
     _focus_user32.GetForegroundWindow.restype = _ctypes.c_void_p
     _focus_user32.SetForegroundWindow.argtypes = [_ctypes.c_void_p]
     _focus_user32.SetForegroundWindow.restype = _wintypes.BOOL
     _focus_user32.keybd_event.argtypes = [
         _wintypes.BYTE, _wintypes.BYTE, _wintypes.DWORD, _wintypes.ULONG,
     ]
+    _focus_user32.ShowWindow.argtypes = [_ctypes.c_void_p, _wintypes.INT]
+    _focus_user32.IsWindowVisible.argtypes = [_ctypes.c_void_p]
+    _focus_user32.IsWindowVisible.restype = _wintypes.BOOL
+    _focus_user32.GetWindowThreadProcessId.argtypes = [
+        _ctypes.c_void_p, _ctypes.POINTER(_wintypes.DWORD)]
+    _focus_user32.EnumWindows.argtypes = [
+        _ctypes.WINFUNCTYPE(_wintypes.BOOL, _ctypes.c_void_p, _wintypes.LPARAM),
+        _wintypes.LPARAM,
+    ]
+    _focus_kernel32.OpenProcess.restype = _ctypes.c_void_p
+    _focus_kernel32.CloseHandle.argtypes = [_ctypes.c_void_p]
     _VK_MENU = 0xA4            # the ALT key
     _KEYEVENTF_KEYUP = 0x0002
+    _SW_HIDE = 0
+    _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 else:
     _focus_user32 = None
+    _focus_kernel32 = None
+
+
+def _process_image_of_hwnd(hwnd: int) -> str:
+    """Executable file name (lowercase) that owns ``hwnd", or "".
+
+    Used to tell FxSound's own window apart from every other top-level
+    window, so the pop-up suppression only ever touches FxSound.
+    """
+    if not IS_WINDOWS or _focus_user32 is None:
+        return ""
+    try:
+        pid = _wintypes.DWORD(0)
+        _focus_user32.GetWindowThreadProcessId(_ctypes.c_void_p(hwnd),
+                                               _ctypes.byref(pid))
+        if not pid.value:
+            return ""
+        handle = _focus_kernel32.OpenProcess(
+            _PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
+        if not handle:
+            return ""
+        try:
+            buffer = _ctypes.create_unicode_buffer(1024)
+            size = _wintypes.DWORD(1024)
+            if not _focus_kernel32.QueryFullProcessImageNameW(
+                    handle, 0, buffer, _ctypes.byref(size)):
+                return ""
+            return buffer.value.rsplit("\\", 1)[-1].lower()
+        finally:
+            _focus_kernel32.CloseHandle(handle)
+    except Exception:
+        return ""
+
+
+def _visible_windows_of_image(image_name: str) -> list[int]:
+    """Visible top-level window handles owned by ``image_name"."""
+    if not IS_WINDOWS or _focus_user32 is None:
+        return []
+    found: list[int] = []
+
+    def _on_window(hwnd: int, _lparam: int) -> bool:
+        try:
+            if _focus_user32.IsWindowVisible(_ctypes.c_void_p(hwnd)) and \
+                    _process_image_of_hwnd(hwnd) == image_name:
+                found.append(int(hwnd))
+        except Exception:
+            pass
+        return True
+
+    try:
+        callback = _ctypes.WINFUNCTYPE(
+            _wintypes.BOOL, _ctypes.c_void_p, _wintypes.LPARAM)(_on_window)
+        _focus_user32.EnumWindows(callback, 0)
+    except Exception:
+        pass
+    return found
 
 
 class _FocusGuard:
@@ -105,6 +175,32 @@ class _FocusGuard:
             _focus_user32.keybd_event(_VK_MENU, 0, 0, 0)
             _focus_user32.SetForegroundWindow(_ctypes.c_void_p(int(hwnd)))
             _focus_user32.keybd_event(_VK_MENU, 0, _KEYEVENTF_KEYUP, 0)
+        except Exception:
+            pass
+
+    #: The image name of the application this backend drives.
+    FXSOUND_IMAGE = "fxsound.exe"
+
+    @staticmethod
+    def suppress_popups() -> None:
+        """Hide FxSound's window when a CLI command raised it.
+
+        The application lives in the tray; when one of its command-line
+        invocations brings its main window up over whatever the user is
+        doing, the window is found by image name and hidden again - and
+        only FxSound's windows are touched. Runs after every spawn, so the
+        user's foreground application keeps focus during a live drag.
+        """
+        if not IS_WINDOWS or _focus_user32 is None:
+            return
+        try:
+            foreground = int(_focus_user32.GetForegroundWindow() or 0)
+            if not foreground:
+                return
+            if _process_image_of_hwnd(foreground) != _FocusGuard.FXSOUND_IMAGE:
+                return
+            for hwnd in _visible_windows_of_image(_FocusGuard.FXSOUND_IMAGE):
+                _focus_user32.ShowWindow(_ctypes.c_void_p(hwnd), _SW_HIDE)
         except Exception:
             pass
 
@@ -265,6 +361,7 @@ class FxSoundBackend:
             return False
         finally:
             _FocusGuard.restore(foreground)
+            _FocusGuard.suppress_popups()
         return True
 
     def wait_until_running(self, timeout: float = 10.0) -> FxSoundStatus:
@@ -297,6 +394,11 @@ class FxSoundBackend:
 
         status_path = self._status_path()
         if force or not self._status_fresh(status_path):
+            # The --status spawn is guarded like every other command: the
+            # probe runs whenever the Audio page opens, and an unguarded
+            # spawn is exactly how FxSound raised itself over the user's
+            # work without the Hub ever sending a setting.
+            foreground = _FocusGuard.capture()
             try:
                 # CREATE_NO_WINDOW keeps a console from flashing.
                 subprocess.run(
@@ -309,6 +411,9 @@ class FxSoundBackend:
                 )
             except (OSError, subprocess.SubprocessError) as exc:
                 log.debug("FxSound --status request failed: %s", exc)
+            finally:
+                _FocusGuard.restore(foreground)
+                _FocusGuard.suppress_popups()
             deadline = time.monotonic() + _STATUS_SETTLE_SECONDS
             while time.monotonic() < deadline and not self._status_fresh(status_path):
                 time.sleep(0.1)
@@ -362,7 +467,7 @@ class FxSoundBackend:
         effects: dict[str, float] = {}
         fx = data.get("effects") or {}
         if isinstance(fx, dict):
-            for canonical, accepted in _FXound_EFFECT_KEYS.items():
+            for canonical, accepted in _FXSOUND_EFFECT_KEYS.items():
                 for key in accepted:
                     if key in fx:
                         try:
@@ -427,7 +532,9 @@ class FxSoundBackend:
         if exe is None:
             return False
         # Documented CLI: values attach with '=', no space. The focus guard
-        # keeps the application from raising itself over the user's work.
+        # keeps the application from raising itself over the user's work,
+        # and the pop-up suppression re-hides FxSound when a command raised
+        # its main window anyway (the app lives in the tray).
         foreground = _FocusGuard.capture()
         try:
             subprocess.run(
@@ -445,6 +552,7 @@ class FxSoundBackend:
             return False
         finally:
             _FocusGuard.restore(foreground)
+            _FocusGuard.suppress_popups()
 
     def set_power(self, enabled: bool) -> bool:
         return self._send(f"--power={'1' if enabled else '0'}")
@@ -485,7 +593,7 @@ class FxSoundBackend:
             return True
         pairs = []
         for canonical, value in effects.items():
-            keys = _FXound_EFFECT_KEYS.get(canonical)
+            keys = _FXSOUND_EFFECT_KEYS.get(canonical)
             if not keys:
                 continue
             clamped = max(0.0, min(10.0, float(value)))

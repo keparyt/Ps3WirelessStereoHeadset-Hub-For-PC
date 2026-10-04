@@ -23,6 +23,7 @@ from typing import Any
 
 from ..applog import get_logger
 from .device_monitor import AudioDeviceMonitor, EndpointInfo
+from . import fxsound_install
 from .fxsound_backend import FxSoundBackend, FxSoundStatus
 from .loopback_dsp import LoopbackDSPEngine, ProcessingState
 from .profiles import AudioProfile, ProfileStore
@@ -250,6 +251,20 @@ class AudioEngine:
     def fxsound_download_url(self) -> str:
         return self._fxsound.DOWNLOAD_URL
 
+    def fxsound_setup_url(self) -> str:
+        """Direct URL of the official FxSound setup executable."""
+        return fxsound_install.FXSOUND_URL
+
+    def install_fxsound_silently(self, report=None, progress=None) -> bool:
+        """Download + run the FxSound setup unattended; True when usable.
+
+        Only the setup's own UAC elevation needs a click - the install goes
+        to Program Files without any wizard. Safe to call when FxSound is
+        already installed: it reports that and succeeds without downloading.
+        """
+        return fxsound_install.install_fxsound_silently(
+            report=report or (lambda _text: None), progress=progress)
+
     def apply_profile_via_fxsound(self, profile: AudioProfile,
                                   output_name: str) -> FxSoundStatus:
         return self._fxsound.apply_profile(profile, output_name)
@@ -287,6 +302,24 @@ class AudioEngine:
         updated = _profile_from_status(profile, status)
         self.set_profile(updated)
         return updated
+
+    def fxsound_page_opened(self) -> FxSoundStatus | None:
+        """Pre-sync from FxSound when the user opens the Audio page.
+
+        **Load only, never push**: the point is that the Hub shows and edits
+        the configuration FxSound is *already* running, so the user's first
+        touch of a slider continues from the application's state instead of
+        stomping it with whatever a stale profile held. Sends one ``--status``
+        request (guarded like every command), adopts everything the
+        application reports into the active profile, and returns the status.
+        ``None`` means FxSound is not installed.
+        """
+        if not self._fxsound.is_installed():
+            return None
+        status = self.fxsound_status(force=True)
+        if status.running:
+            self.adopt_fxsound_status(status)
+        return status
 
     # ------------------------------------------------------- output routing --
 

@@ -7,6 +7,11 @@
 #   3. (default) registers an HKCU Run entry so the Hub starts minimized in
 #      the system tray at Windows sign-in. Pass -NoAutostart to skip.
 #   4. Writes uninstall.ps1 next to the installed app
+#   5. Offers to download and silently install FxSound (the audio engine the
+#      Hub drives) when it is missing. The setup runs unattended and installs
+#      per-machine into Program Files; only its own UAC elevation (and any
+#      driver prompt Windows shows) needs attention.
+#      -NoFxSound skips the offer, -WithFxSound installs without asking.
 #
 # Nothing touches machine-wide state: no admin rights, no other users.
 #
@@ -15,12 +20,16 @@
 #   powershell ... -File install.ps1 -NoAutostart                     # no start-with-Windows
 #   powershell ... -File install.ps1 -DesktopShortcut                 # also a desktop icon
 #   powershell ... -File install.ps1 -Uninstall                       # remove everything
+#   powershell ... -File install.ps1 -NoFxSound                        # don't offer FxSound
+#   powershell ... -File install.ps1 -WithFxSound                      # install FxSound without asking
 
 [CmdletBinding()]
 param(
     [switch]$NoAutostart,
     [switch]$DesktopShortcut,
-    [switch]$Uninstall
+    [switch]$Uninstall,
+    [switch]$NoFxSound,
+    [switch]$WithFxSound
 )
 
 $ErrorActionPreference = 'Stop'
@@ -34,6 +43,10 @@ $StartMenu  = [Environment]::GetFolderPath('Programs')  # user's Start Menu
 $MenuDir    = Join-Path $StartMenu $AppName
 $RunKey     = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $RunValue   = "PS3$AppSlug"
+#: Official FxSound setup. "latest" is a moving GitHub release tag, so this
+#: URL is stable and always serves the current build.
+$FxSoundUrl   = 'https://github.com/fxsound2/fxsound-app/releases/download/latest/fxsound_setup.exe'
+$FxSoundSetup = Join-Path $env:TEMP 'fxsound_setup.exe'
 
 function Info($m)  { Write-Host "  $m" -ForegroundColor Gray }
 function Ok($m)    { Write-Host "[OK] $m" -ForegroundColor Green }
@@ -68,6 +81,89 @@ function New-Shortcut($path, $target, $arguments, $description, $workingDir) {
     if ($workingDir) { $shortcut.WorkingDirectory = $workingDir }
     $shortcut.IconLocation = $target + ',0'
     $shortcut.Save()
+}
+
+function Test-FxSoundInstalled {
+    # Mirrors the Hub's own detection (ps3hub.audio.fxsound_backend).
+    $dirs = @()
+    if ($env:ProgramFiles) {
+        $dirs += (Join-Path $env:ProgramFiles 'FxSound LLC\FxSound')
+        $dirs += (Join-Path $env:ProgramFiles 'FxSound')
+    }
+    if (${env:ProgramFiles(x86)}) {
+        $dirs += (Join-Path ${env:ProgramFiles(x86)} 'FxSound LLC\FxSound')
+    }
+    if ($env:LOCALAPPDATA) {
+        $dirs += (Join-Path $env:LOCALAPPDATA 'Programs\FxSound')
+        $dirs += (Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps')
+    }
+    foreach ($dir in $dirs) {
+        if (Test-Path (Join-Path $dir 'fxsound.exe')) { return $true }
+    }
+    return [bool](Get-Command fxsound -ErrorAction SilentlyContinue)
+}
+
+function Install-FxSoundSilently {
+    # Download the official setup and run it unattended (/VERYSILENT). It has a
+    # requireAdministrator manifest, so Windows shows one UAC prompt - that is
+    # the only interaction; everything else, including the install into
+    # Program Files, happens without further clicks.
+    Remove-Item $FxSoundSetup -Force -ErrorAction SilentlyContinue
+    Step 'Downloading the FxSound installer (this can take a minute)'
+    try {
+        $ProgressPreference = 'SilentlyContinue'   # IWR's progress bar is slow
+        [Net.ServicePointManager]::SecurityProtocol = `
+            [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri $FxSoundUrl -OutFile $FxSoundSetup -UseBasicParsing
+    } catch {
+        Write-Host "Could not download FxSound: $_" -ForegroundColor Red
+        Write-Host "Get it manually from: $FxSoundUrl" -ForegroundColor Yellow
+        return $false
+    } finally {
+        $ProgressPreference = 'Continue'
+    }
+    $size = [math]::Round((Get-Item $FxSoundSetup).Length / 1MB, 1)
+    Ok "Downloaded $size MiB"
+
+    Step 'Installing FxSound silently (confirm the UAC prompt if it appears)'
+    try {
+        $process = Start-Process -FilePath $FxSoundSetup `
+            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' `
+            -PassThru -Wait
+    } catch {
+        Write-Host "Could not start the FxSound setup: $_" -ForegroundColor Red
+        Write-Host "Run it manually from: $FxSoundSetup" -ForegroundColor Yellow
+        return $false
+    }
+    if ($process.ExitCode -ne 0) {
+        Write-Host "The FxSound setup exited with code $($process.ExitCode)." -ForegroundColor Yellow
+        Write-Host "You can install it later from: $FxSoundUrl" -ForegroundColor Yellow
+        return $false
+    }
+    if (Test-FxSoundInstalled) {
+        Ok 'FxSound installed'
+    } else {
+        Write-Host 'FxSound setup finished. If the Hub cannot find it yet, reboot once.' -ForegroundColor Yellow
+    }
+    return $true
+}
+
+function Offer-FxSound {
+    if ($NoFxSound) { Info 'FxSound suggestion skipped (-NoFxSound)'; return }
+    Step 'Checking for FxSound (the audio engine the Hub drives)'
+    if (Test-FxSoundInstalled) { Ok 'FxSound is already installed'; return }
+    Write-Host ''
+    Write-Host 'The Hub drives FxSound, which is not installed yet. Without it the' -ForegroundColor Yellow
+    Write-Host 'equalizer and effects cannot be applied.' -ForegroundColor Yellow
+    if (-not $WithFxSound) {
+        $answer = Read-Host 'Download and install FxSound now, silently? [Y/n]'
+        if ($answer -match '^\s*(n|no)\s*$') {
+            Info 'Skipped. You can re-run this installer, or get FxSound from:'
+            Write-Host "  $FxSoundUrl"
+            return
+        }
+    }
+    Install-FxSoundSilently | Out-Null
 }
 
 if ($Uninstall) {
@@ -150,10 +246,17 @@ Copy-Item $PSScriptRoot\install.ps1 $installerCopy -Force
 # A copy inside the target uninstalls via the -Uninstall switch itself.
 Ok 'Uninstaller written (Start Menu > Uninstall PS3 Headset Hub)'
 
+Offer-FxSound
+
 Write-Host ''
 Ok "$AppName installed."
 Write-Host '     Start it now from the Start Menu, or launch:'
 Write-Host "     $TargetExe"
 if (-not $NoAutostart) {
     Write-Host '     It will start itself in the tray the next time you sign in.'
+}
+if (Test-FxSoundInstalled) {
+    Write-Host '     FxSound is installed, so the audio features are ready to use.'
+} else {
+    Write-Host "     Audio features need FxSound: $FxSoundUrl"
 }

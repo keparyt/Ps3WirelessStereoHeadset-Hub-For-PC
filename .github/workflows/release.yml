@@ -1,7 +1,8 @@
 name: Release
 
-# A version tag (v1.2.10, v1.3.0, ...) builds the distributable zip on
-# Windows and attaches it to a GitHub Release. The build tool derives the
+# A version tag (v1.2.10, v1.3.0, ...) builds the distributable zip and the
+# standalone installer exe on Windows and attaches them, together with the
+# documentation screenshots, to a GitHub Release. The build tool derives the
 # version resource from app/ps3hub/__init__.py, so keep APP_VERSION in sync
 # with the tag before tagging.
 
@@ -29,14 +30,6 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r app/requirements.txt numpy pyinstaller
 
-      - name: Run the test suite
-        working-directory: app
-        run: python -m pytest tests/ -q
-
-      - name: Build the onedir app and the distributable zip
-        working-directory: app
-        run: python packaging/build_exe.py --clean
-
       - name: Check the tag matches APP_VERSION
         shell: pwsh
         run: |
@@ -51,11 +44,25 @@ jobs:
           }
           Write-Host "Tag v$tag matches APP_VERSION $version"
 
-      - name: Attach the zip to the GitHub Release
+      - name: Run the test suite
+        working-directory: app
+        run: python -m pytest tests/ -q
+
+      - name: Build the onedir app and the distributable zip
+        working-directory: app
+        run: python packaging/build_exe.py --clean
+
+      - name: Build the standalone installer exe
+        working-directory: app
+        run: python packaging/build_installer.py --skip-smoke
+
+      - name: Attach the artifacts to the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             build/PS3HeadsetHub-*-win64.zip
+            build/PS3HeadsetHubInstaller.exe
             build/build-report.txt
+            app/docs/*.png
           generate_release_notes: true
           fail_on_unmatched_files: true

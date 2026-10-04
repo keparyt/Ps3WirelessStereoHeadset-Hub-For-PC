@@ -654,6 +654,158 @@ def test_view_poll_does_nothing_while_fxsound_is_down():
         assert engine.reads == 0
 
 
+# --------------------------------------------- band adoption and the UI ---
+
+
+def _status_with_bands(count_declared: int, bands_total: int,
+                       master_gain: float = 0.0) -> "_MirrorStatus":
+    """A status like FxSound writes: every engine band, however many the
+    declared curve count - a 20-band selection still carries 31 entries."""
+    return _MirrorStatus(equalizer={
+        "num_bands": count_declared,
+        "master_gain": master_gain,
+        "bands": [{"frequency": 100.0 * (i + 1), "gain": 1.0 + i}
+                  for i in range(bands_total)],
+    })
+
+
+def test_adopting_a_20_band_status_draws_20_bands_not_31():
+    engine = _MirrorEngine([_status_with_bands(20, 31)], [(1, 10)])
+    with _mirror_view(engine) as view:
+        view._fx_ui_enabled = True
+        view._load_full_state(engine.initial_status)
+        status = _status_with_bands(20, 31)
+        view._adopt_equalizer_from_status(status)
+        assert len(view._eq_graph.gains) == 20, view._eq_graph.gains
+        assert len(view._eq_knobs.gains) == 20, view._eq_knobs.gains
+        assert view._band_var.get() == "20 Bands"
+
+
+def test_adopting_a_5_band_status_draws_5_bands():
+    engine = _MirrorEngine([_status_with_bands(5, 31)], [(1, 10)])
+    with _mirror_view(engine) as view:
+        view._fx_ui_enabled = True
+        status = _status_with_bands(5, 31)
+        view._adopt_equalizer_from_status(status)
+        assert len(view._eq_graph.gains) == 5
+        assert len(view._eq_knobs.gains) == 5
+        assert view._band_var.get() == "5 Bands"
+
+
+def test_band_count_change_carries_the_curve_instead_of_wiping_it():
+    engine = _MirrorEngine([], [(1, 10)])
+    with _mirror_view(engine) as view:
+        view._eq_graph.set_curve([100.0, 1000.0, 10000.0], [3.0, -2.0, 0.0])
+        view._eq_knobs.set_bands([100.0, 1000.0, 10000.0], [3.0, -2.0, 0.0])
+        view._band_var.set("5 Bands")
+        view._on_band_count()
+        gains = view._eq_graph.gains
+        assert len(gains) == 5
+        assert gains[0] == 3.0 and gains[1] == -2.0, \
+            "the existing curve must survive the band-count change"
+        assert gains[2:] == [0.0, 0.0, 0.0], "extra bands start flat"
+
+
+def test_show_profile_eq_pads_a_short_curve_to_the_band_count():
+    engine = _MirrorEngine([], [(1, 10)])
+    with _mirror_view(engine) as view:
+        profile = AudioProfile(eq=[(100.0, 3.0)], eq_bands=5)
+        view._show_profile_eq(profile)
+        assert len(view._eq_graph.gains) == 5
+        assert len(view._eq_knobs.gains) == 5
+        assert view._eq_graph.gains[0] == 3.0
+
+
+def test_master_gain_is_one_shared_variable_on_both_cards():
+    engine = _MirrorEngine([], [(1, 10)])
+    with _mirror_view(engine) as view:
+        assert view._gain_var is view._eq_vars["master_gain_db"], \
+            "two independent gain vars are what made the setting not stick"
+        # Setting it through one card's variable shows on the other.
+        view._gain_var.set(-6.0)
+        assert view._eq_gain_label.cget("text") == "-6.0 dB"
+
+
+def test_profile_round_trip_keeps_a_20_band_curve_through_the_view():
+    engine = _MirrorEngine([], [(1, 10)])
+    with _mirror_view(engine) as view:
+        freqs = [31.5 * (i + 1) for i in range(20)]
+        profile = AudioProfile(eq_bands=20, eq=list(zip(freqs, [1.0] * 20)))
+        view._show_profile_eq(profile)
+        assert len(view._eq_graph.gains) == 20
+        assert len(view._eq_knobs.gains) == 20
+
+
+def test_knob_columns_are_cut_from_the_graph_positions():
+    """Each knob centre must sit exactly under its graph point.
+
+    The graph spreads its points on a log axis; an even cell split cannot
+    reproduce that, which is what knocked the row out of alignment. The
+    columns are cut at the midpoints between the graph's own positions, so
+    every column centre equals the point position above it.
+    """
+    from ps3hub.ui.widget_eq import EQGraph, EQKnobRow
+
+    root = _shared_root()
+    captured: list[Callable] = []
+    graph = EQGraph(root, lambda index, gain: captured.append((index, gain)))
+    row = EQKnobRow(root, lambda index, gain: captured.append((index, gain)))
+    row.bind_graph(graph)
+    try:
+        graph.set_curve([25.0, 100.0, 1000.0, 10000.0, 16000.0],
+                        [0.0] * 5)
+        row.set_bands([25.0, 100.0, 1000.0, 10000.0, 16000.0], [0.0] * 5)
+        graph.update_idletasks()
+        row.update_idletasks()
+        row._relayout(width=800)
+
+        positions = graph.column_positions(800)
+        assert len(positions) == 5
+        # Every knob's DRAW position is exactly its graph point.
+        assert row._positions == pytest.approx(positions), \
+            "a knob is not drawn under its graph point"
+        # The hit columns tile the row: interior edges are midpoints
+        # between neighbouring points, outer edges reflect half a gap.
+        for (_, left_end), (right_start, _) in zip(row._columns,
+                                                   row._columns[1:]):
+            assert left_end == pytest.approx(right_start)
+        for index in range(1, 4):
+            midpoint = (positions[index - 1] + positions[index]) / 2.0
+            assert row._columns[index][0] == pytest.approx(midpoint)
+        # Clicking each knob's position selects that knob.
+        row._canvas._press_x = positions[2]
+        assert row._index_of(row._canvas) == 2
+        row._canvas._press_x = positions[0]
+        assert row._index_of(row._canvas) == 0
+    finally:
+        try:
+            graph.destroy()
+        except tk.TclError:
+            pass
+        try:
+            row.destroy()
+        except tk.TclError:
+            pass
+
+
+def test_knob_columns_fall_back_to_even_spacing_without_a_graph():
+    from ps3hub.ui.widget_eq import EQKnobRow
+
+    root = _shared_root()
+    row = EQKnobRow(root, lambda index, gain: None)
+    try:
+        row.set_bands([100.0, 1000.0, 10000.0], [0.0, 0.0, 0.0])
+        row._relayout(width=600)
+        assert len(row._columns) == 3
+        centres = [(x0 + x1) / 2.0 for x0, x1 in row._columns]
+        assert centres == pytest.approx([100.0, 300.0, 500.0])
+    finally:
+        try:
+            row.destroy()
+        except tk.TclError:
+            pass
+
+
 # ------------------------------------------------- tray icon rendering ---
 
 

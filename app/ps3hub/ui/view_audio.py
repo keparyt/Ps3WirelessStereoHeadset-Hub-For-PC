@@ -19,7 +19,9 @@ facade; no COM, no HID and no thread ownership leaks into the view.
 
 from __future__ import annotations
 
+import queue
 import sys
+import threading
 import time
 import tkinter as tk
 from dataclasses import replace as dataclass_replace
@@ -121,6 +123,13 @@ class AudioView(tk.Frame):
         # the FxSound features are currently unlocked.
         self._last_fx_status: Any = None
         self._fx_ui_enabled = False
+        # The page-open pre-sync runs once per visit; refresh() resets the
+        # flag whenever the page is closed elsewhere.
+        self._fx_loaded_for_page = False
+        # The automatic FxSound install (download + silent setup) runs in a
+        # worker thread and talks to the UI through this queue.
+        self._fx_install_busy = False
+        self._fx_install_log: queue.Queue = queue.Queue()
         # Live-mirroring bookkeeping: the status.json write we last saw, and
         # a fingerprint of the status we last applied, so the poll can tell
         # "FxSound changed something on its own" apart from "this is the
@@ -217,6 +226,12 @@ class AudioView(tk.Frame):
         effects = Card(root, "Effect profile", "for the default output")
         effects.grid(row=0, column=1, sticky="nsew", pady=(0, 12))
 
+        # One set of EQ-control variables shared by both cards: the Master
+        # gain slider used to exist twice (here and beside the equalizer)
+        # with independent values that silently overwrote each other, so the
+        # two widgets now bind one variable and move together.
+        self._eq_vars: dict[str, tk.DoubleVar] = {}
+
         grid = tk.Frame(effects.body, bg=PANEL)
         grid.pack(fill="x")
         grid.columnconfigure(1, weight=1)
@@ -245,8 +260,11 @@ class AudioView(tk.Frame):
         gain_row.pack(fill="x", pady=(12, 0))
         tk.Label(gain_row, text="Master gain", bg=PANEL, fg=PAPER,
                  font=font.base, anchor="w").pack(side="left")
-        self._gain_var = tk.DoubleVar(value=0.0)
-        ttk.Scale(gain_row, from_=-12.0, to=12.0, variable=self._gain_var,
+        # The full range the profile and the FxSound CLI accept (-20..+20);
+        # the old -12..+12 slider could not reach the values FxSound itself
+        # reports, so adopting its state shoved the slider off-scale.
+        self._gain_var = self._eq_vars["master_gain_db"] = tk.DoubleVar(value=0.0)
+        ttk.Scale(gain_row, from_=-20.0, to=20.0, variable=self._gain_var,
                   command=lambda _v: self._on_effect()).pack(
             side="left", fill="x", expand=True, padx=12)
         self._gain_label = tk.Label(gain_row, text="0.0 dB", bg=PANEL, fg=MUTED,
@@ -283,9 +301,12 @@ class AudioView(tk.Frame):
             buttons, text="Start FxSound", command=self._on_start_fxsound)
         self._fx_start_button.pack(side="left")
         self._fx_install_button = ttk.Button(
-            buttons, text="Open the FxSound download page",
-            command=self._on_open_download_page)
+            buttons, text="Install FxSound",
+            command=self._on_install_fxsound)
         self._fx_install_button.pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="Open the download page",
+                   command=self._on_open_download_page).pack(
+            side="left", padx=(8, 0))
         ttk.Button(buttons, text="Check FxSound status",
                    command=self._probe_fxsound).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="Sync from FxSound now",
@@ -319,17 +340,24 @@ class AudioView(tk.Frame):
         self._eq_graph.pack(fill="x", pady=(10, 0))
 
         # The fine control under the graph: one knob per band, mirroring the
-        # curve above. Knob drags feed the same handler as graph drags.
+        # curve above. Knob drags feed the same handler as graph drags. The
+        # row takes the graph's log-axis geometry, so every knob sits
+        # exactly under its band's point; when the graph re-lays out (a
+        # window resize), the columns are re-cut from it.
         self._eq_knobs = EQKnobRow(body, self._on_band_dragged)
         self._eq_knobs.pack(fill="x", pady=(10, 0))
+        self._eq_knobs.bind_graph(self._eq_graph)
+        self._eq_graph.bind("<Configure>",
+                            lambda _e: self._eq_knobs._relayout())
 
-        # The four controls FxSound puts beside its curve.
+        # The four controls FxSound puts beside its curve. Master gain is
+        # deliberately absent: its variable lives on the Effect profile card
+        # (both sliders bind the same tk variable and stay in lock-step), so
+        # there is exactly one value behind the two widgets.
         grid = tk.Frame(body, bg=PANEL)
         grid.pack(fill="x", pady=(12, 0))
         grid.columnconfigure(1, weight=1)
-        self._eq_vars: dict[str, tk.DoubleVar] = {}
         eq_controls = (
-            ("master_gain_db", "Master gain", -20.0, 20.0, "dB"),
             ("volume_leveling_db", "Volume leveling", 0.0, 4.0, "dB"),
             ("filter_q", "Filter Q", 1.0, 3.0, "x"),
             ("balance_db", "Balance", -20.0, 20.0, "dB"),
@@ -351,6 +379,25 @@ class AudioView(tk.Frame):
                     else f"{v.get():.1f} {unit}"),
             )
             self._eq_vars[key] = var
+
+        # The master gain row mirrors the Effect profile card's slider: one
+        # shared variable, its own readout.
+        gain_row = tk.Frame(grid, bg=PANEL)
+        gain_row.grid(row=len(eq_controls), column=0, columnspan=3,
+                      sticky="ew", pady=(3, 0))
+        tk.Label(gain_row, text="Master gain", bg=PANEL, fg=PAPER,
+                 font=font.base, anchor="w").pack(side="left")
+        ttk.Scale(gain_row, from_=-20.0, to=20.0,
+                  variable=self._eq_vars["master_gain_db"],
+                  command=lambda _v: self._on_eq_control("master_gain_db")
+                  ).pack(side="left", fill="x", expand=True, padx=(12, 8))
+        self._eq_gain_label = tk.Label(gain_row, text="0.0 dB", bg=PANEL,
+                                       fg=MUTED, font=font.code_small, width=9)
+        self._eq_gain_label.pack(side="right")
+        self._eq_vars["master_gain_db"].trace_add(
+            "write", lambda *_: self._eq_gain_label.configure(
+                text=f"{self._eq_vars['master_gain_db'].get():+.1f} dB")
+        )
 
         # Bundled example presets with their one-line descriptions.
         self._examples = _example_presets()
@@ -434,7 +481,8 @@ class AudioView(tk.Frame):
         self._fx_start_button.configure(
             state="normal" if found and not ready else "disabled")
         self._fx_install_button.configure(
-            state="normal" if not found else "disabled")
+            state="normal" if not found and not self._fx_install_busy
+            else "disabled")
 
     def _require_fxsound(self, prompt_start: bool = True) -> bool:
         """Make FxSound usable before a feature runs, or explain why not.
@@ -474,7 +522,9 @@ class AudioView(tk.Frame):
                     "FxSound is not installed",
                     "FxSound is not installed on this PC, so the Hub cannot "
                     "drive it.\n\n"
-                    "FxSound is free and open source. Install it from:\n" + url,
+                    "FxSound is free and open source. Press \u201cInstall "
+                    "FxSound\u201d on this page to install it automatically, "
+                    "or get it from:\n" + url,
                     parent=self):
                 self._on_open_download_page()
             else:
@@ -507,6 +557,103 @@ class AudioView(tk.Frame):
 
     def _on_start_fxsound(self) -> None:
         self._start_and_settle()
+
+    def _on_install_fxsound(self) -> None:
+        """Download and silently install FxSound, then start and load it.
+
+        The setup installs per-machine into Program Files without any
+        wizard; the only click it asks for is the UAC confirmation its own
+        manifest triggers. The download runs in a worker thread so the page
+        stays responsive, narrating into the FxSound detail line.
+        """
+        engine = self._engine_provider()
+        if engine is None or self._fx_install_busy:
+            return
+        source = ""
+        try:
+            source = engine.fxsound_setup_url()
+        except AttributeError:
+            source = ""
+        if not tkmessagebox.askyesno(
+                "Install FxSound",
+                "Download and install FxSound now?\n\n"
+                "The official setup runs silently and installs into Program "
+                "Files; the only thing it asks for is the standard UAC "
+                "confirmation. When it is done the Hub starts it and loads "
+                "its settings.\n\n"
+                + (f"Source: {source}" if source else ""),
+                parent=self):
+            return
+        self._fx_install_busy = True
+        self._gate_ui()
+        self._fxsound_detail.configure(text="Downloading FxSound...",
+                                       fg=MUTED)
+        threading.Thread(target=self._fxsound_install_worker,
+                         daemon=True).start()
+        self.after(120, self._drain_fxsound_install)
+
+    def _fxsound_install_worker(self) -> None:
+        """Worker side of the automatic install; UI calls only via the queue."""
+        engine = self._engine_provider()
+        if engine is None:
+            self._fx_install_log.put(("done", False))
+            return
+
+        def report(text: str) -> None:
+            self._fx_install_log.put(("log", text))
+
+        def progress(done: int, total: int) -> None:
+            self._fx_install_log.put(("progress", done, total))
+
+        try:
+            ok = engine.install_fxsound_silently(report=report,
+                                                 progress=progress)
+        except Exception as error:  # defensive: never take the page down
+            log(f"fxsound auto-install failed: {error}")
+            self._fx_install_log.put(("done", False))
+            return
+        self._fx_install_log.put(("done", ok))
+
+    def _drain_fxsound_install(self) -> None:
+        """Paint worker messages; re-arms itself until the install finishes."""
+        try:
+            while True:
+                message = self._fx_install_log.get_nowait()
+                kind = message[0]
+                if kind == "log":
+                    self._fxsound_detail.configure(text=str(message[1]),
+                                                   fg=MUTED)
+                elif kind == "progress":
+                    done, total = message[1], message[2]
+                    if total:
+                        self._fxsound_detail.configure(
+                            text=f"Downloading FxSound... "
+                                 f"{100 * done / total:.0f}%", fg=MUTED)
+                elif kind == "done":
+                    self._fxsound_install_done(bool(message[1]))
+                    return  # finished: stop polling
+        except queue.Empty:
+            pass
+        self.after(120, self._drain_fxsound_install)
+
+    def _fxsound_install_done(self, ok: bool) -> None:
+        self._fx_install_busy = False
+        if ok:
+            self._eq_banner.set("FxSound installed. Starting it and loading "
+                                "its settings...", "info")
+            # Starts FxSound if it is not up yet, then loads its live state
+            # and unlocks the equalizer - the same path as "Start FxSound".
+            self._start_and_settle()
+        else:
+            self._fxsound_detail.configure(
+                text="FxSound was not installed. You can retry, or use “Open "
+                     "the download page” to install it by hand.",
+                fg=FAINT,
+            )
+            self._eq_banner.set("FxSound was not installed. Retry the "
+                                "automatic install, or get it from the "
+                                "download page.", "warn")
+            self._gate_ui()
 
     def _on_open_download_page(self) -> None:
         """Open the FxSound download page in the default browser."""
@@ -659,8 +806,8 @@ class AudioView(tk.Frame):
             self._suspend = False
 
     def _on_sync_from_fxsound(self) -> None:
-        if not self._require_fxsound(prompt_start=False):
-            return
+        # Load-only by definition: this button re-reads the application's
+        # settings and mirrors them here, it never pushes anything back.
         status = self._load_full_state(force=True)
         if status is not None and getattr(status, "running", False):
             preset = getattr(status, "selected_preset", "") or "no preset"
@@ -774,7 +921,7 @@ class AudioView(tk.Frame):
             self._effect_vars["surround"].set(fresh.surround)
             self._effect_vars["dynamic_boost"].set(fresh.dynamic_boost)
             self._gain_var.set(fresh.master_gain_db)
-            for key, value in (("master_gain_db", 0.0), ("volume_leveling_db", 0.0),
+            for key, value in (("volume_leveling_db", 0.0),
                                ("filter_q", 1.0), ("balance_db", 0.0)):
                 self._eq_vars[key].set(value)
             self._band_var.set(f"{count} Bands")
@@ -816,10 +963,18 @@ class AudioView(tk.Frame):
             return
         from ..audio.fac import default_band_frequencies
         count = profile.eq_bands or 10
-        frequencies = default_band_frequencies(count)
+        # Keep the stored frequencies - FxSound's own or a preset's custom
+        # centres - rather than snapping the curve back onto the default
+        # table on every drag (observed live: FxSound's 20-band centres were
+        # silently replaced, so the Hub then pushed the wrong curve).
+        stored = list(profile.eq or [])
+        frequencies = [f for f, _g in stored[:count]]
+        if len(frequencies) < count:
+            frequencies += list(
+                default_band_frequencies(count)[len(frequencies):])
         # The graph always works on a full set of bands; a profile with no
         # stored curve still needs one to drag against.
-        gains = [g for _f, g in profile.eq] or [0.0] * count
+        gains = [g for _f, g in stored] or [0.0] * count
         while len(gains) < count:
             gains.append(0.0)
         gains[index] = gain_db
@@ -827,7 +982,6 @@ class AudioView(tk.Frame):
         self._commit_eq(eq=bands)
         # Keep the knob row on the curve the graph now shows.
         self._eq_knobs.set_bands(frequencies[:count], gains[:count])
-        self._request_live_push()
         self._refresh_eq_summary(bands)
         # Hear it while dragging: the curve goes to FxSound live.
         self._request_live_push()
@@ -839,14 +993,24 @@ class AudioView(tk.Frame):
             return
         from ..audio.fac import default_band_frequencies
         frequencies = default_band_frequencies(count)
+        # Carry the current curve onto the new band count (fxsound keeps the
+        # gains it can when its own band count changes), rather than wiping
+        # the user's tuning. Extra bands start flat.
+        current = list(self._eq_graph.gains)
+        gains = (current + [0.0] * count)[:count]
         self._commit_eq(eq_bands=count,
-                        eq=[(freq, 0.0) for freq in frequencies])
-        self._eq_graph.set_curve(frequencies, [0.0] * count)
-        self._eq_knobs.set_bands(frequencies, [0.0] * count)
-        self._refresh_eq_summary([(f, 0.0) for f in frequencies])
+                        eq=list(zip(frequencies, gains)))
+        self._eq_graph.set_curve(frequencies, gains)
+        self._eq_knobs.set_bands(frequencies, gains)
+        self._refresh_eq_summary(list(zip(frequencies, gains)))
         self._request_live_push()
 
     def _on_eq_control(self, key: str) -> None:
+        if key == "master_gain_db":
+            # One shared variable drives both cards; the effect handler owns
+            # the master gain commit and the live push for it.
+            self._on_effect()
+            return
         self._commit_eq(**{key: self._eq_vars[key].get()})
         self._request_live_push()
 
@@ -916,7 +1080,8 @@ class AudioView(tk.Frame):
                         filter_q=1.0, balance_db=0.0)
         self._suspend = True
         try:
-            self._eq_vars["master_gain_db"].set(0.0)
+            # The shared master gain variable serves both cards' sliders.
+            self._gain_var.set(0.0)
             self._eq_vars["volume_leveling_db"].set(0.0)
             self._eq_vars["filter_q"].set(1.0)
             self._eq_vars["balance_db"].set(0.0)
@@ -960,6 +1125,8 @@ class AudioView(tk.Frame):
 
     def _on_example_description(self, _event=None) -> None:
         """Show the selected example's one-line description."""
+        if self._example_var.get() not in [name for name, _d, _p in self._examples]:
+            return
         label = self._example_var.get()
         for name, description, _path in self._examples:
             if name == label:
@@ -1035,17 +1202,35 @@ class AudioView(tk.Frame):
         self._load_full_state(status)
 
     def _adopt_equalizer_from_status(self, status) -> None:
+        """Draw exactly what the running application reports.
+
+        status.json lists every band the application's engine holds, but the
+        active curve is ``num_bands`` long: a 20-band selection still
+        carries 31 entries, and drawing all of them put 31 knobs under a
+        "20 Bands" selector (and pushed 31 bands back to the application).
+        The list is therefore cut to the declared count, and each slider is
+        only touched for values the status actually reports.
+        """
         eq = getattr(status, "equalizer", {}) or {}
         bands = eq.get("bands") or []
         if not bands:
             return
-        frequencies = [float(b.get("frequency", 0.0)) for b in bands]
-        gains = [float(b.get("gain", 0.0)) for b in bands]
+        try:
+            count = int(eq.get("num_bands") or len(bands))
+        except (TypeError, ValueError):
+            count = len(bands)
+        count = max(1, min(count, len(bands)))
+        frequencies = [float(b.get("frequency", 0.0)) for b in bands[:count]]
+        gains = [float(b.get("gain", 0.0)) for b in bands[:count]]
         self._suspend = True
         try:
-            self._band_var.set(f"{int(eq.get('num_bands', len(bands)))} Bands")
-            self._eq_graph.set_curve(frequencies, gains,
-                                     enabled=self._fx_ui_enabled)
+            self._band_var.set(f"{count} Bands")
+            # The newly adopted state is drawable regardless of how the
+            # gate last rendered: set_enabled was decided for the *previous*
+            # status, and leaving the curve disabled makes the adopted
+            # graph look dead until the next gate pass.
+            self._fx_ui_enabled = True
+            self._eq_graph.set_curve(frequencies, gains, enabled=True)
             self._eq_knobs.set_bands(frequencies, gains)
             for key in ("master_gain_db", "volume_leveling_db",
                         "filter_q", "balance_db"):
@@ -1166,11 +1351,17 @@ class AudioView(tk.Frame):
         from ..audio.fac import default_band_frequencies
         count = profile.eq_bands or 10
         if profile.eq:
-            frequencies = [f for f, _g in profile.eq]
-            gains = [g for _f, g in profile.eq]
+            frequencies = [f for f, _g in profile.eq][:count]
+            gains = [g for _f, g in profile.eq][:count]
         else:
             frequencies = default_band_frequencies(count)
             gains = [0.0] * count
+        # Pad a short stored curve up to the band count so the knob row and
+        # the graph agree on the number of visible bands.
+        while len(frequencies) < count:
+            index = len(frequencies)
+            frequencies.append(default_band_frequencies(count)[index])
+            gains.append(0.0)
         self._suspend = True
         try:
             self._band_var.set(f"{count} Bands")
@@ -1272,14 +1463,57 @@ class AudioView(tk.Frame):
             ready, reason = self._fxsound_ready()
             if reason == "missing":
                 self._eq_banner.set(
-                    "FxSound is not installed. Install it from the download "
-                    "page to use the equalizer and presets here.", "warn")
+                    "FxSound is not installed. Press \u201cInstall FxSound\u201d "
+                    "in the FxSound card to set it up automatically.", "warn")
             elif reason == "stopped":
                 self._eq_banner.set(
                     "FxSound is installed but not running. Press “Start "
                     "FxSound” to use the equalizer and presets.", "warn")
 
     # -------------------------------------------------------------- refresh --
+
+    def on_page_open(self) -> None:
+        """Pre-sync from FxSound when the user enters the Audio page.
+
+        Runs once per page visit, before the first refresh tick can offer
+        any edit: the application's live equalizer, effect levels and
+        selected preset are **loaded** into the Hub (never pushed back), so
+        the very first slider the user touches continues from the exact
+        configuration FxSound is running instead of overwriting it with a
+        stale profile.
+        """
+        if self._fx_loaded_for_page:
+            return
+        self._fx_loaded_for_page = True
+        engine = self._engine_provider()
+        if engine is None:
+            return
+        opener = getattr(engine, "fxsound_page_opened", None)
+        if not callable(opener):
+            return
+        try:
+            status = opener()
+        except Exception:
+            log.exception("FxSound pre-sync on page open failed")
+            return
+        if status is None:
+            return
+        self._last_fx_status = status
+        if getattr(status, "running", False):
+            self._load_full_state(status)
+            self._eq_banner.set(
+                "Synced with FxSound: its current equalizer, effects and "
+                "preset are loaded here.", "info")
+        self._render_fxsound(status)
+
+    def on_page_closed(self) -> None:
+        """Re-arm the page-open pre-sync for the next visit.
+
+        Every entry into the Audio page syncs from FxSound again, so edits
+        made inside the application while the user was on another page are
+        picked up before the next edit starts.
+        """
+        self._fx_loaded_for_page = False
 
     def refresh(self) -> None:
         engine = self._engine_provider()
@@ -1326,6 +1560,9 @@ class AudioView(tk.Frame):
                 self._effect_vars["surround"].set(profile.surround)
                 self._effect_vars["dynamic_boost"].set(profile.dynamic_boost)
                 self._gain_var.set(profile.master_gain_db)
+                for key in ("volume_leveling_db", "filter_q", "balance_db"):
+                    if key in self._eq_vars:
+                        self._eq_vars[key].set(float(getattr(profile, key)))
                 if not self._eq_loaded:
                     # Only seed the graph once: refreshing on every tick would
                     # wipe out a curve the user is in the middle of dragging.
@@ -1354,6 +1591,7 @@ class AudioView(tk.Frame):
                 self._load_full_state(force=True)
                 self.refresh_outputs()
                 self._auto_output_var.set(bool(getattr(engine, "auto_output", False)))
+                self._fx_loaded_for_page = True
             else:
                 # While the page is open, follow FxSound: when the
                 # application rewrote its status file on its own (preset
@@ -1381,9 +1619,9 @@ class AudioView(tk.Frame):
             self._fxsound_pill.set("Not installed", IDLE)
             self._fxsound_detail.configure(
                 text=(
-                    "FxSound (free, open source) is not installed. Install it "
-                    "to drive the equalizer and its presets from the Hub; the "
-                    "Hub's own DSP works without it."
+                    "FxSound (free, open source) is not installed. Press "
+                    "\u201cInstall FxSound\u201d to set it up automatically; "
+                    "the Hub's own DSP works without it."
                 ),
                 fg=FAINT,
             )

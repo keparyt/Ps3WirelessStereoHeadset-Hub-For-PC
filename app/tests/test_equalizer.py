@@ -112,6 +112,34 @@ def test_fifteen_band_table_matches_fxsound():
     ]
 
 
+def test_twenty_band_table_matches_a_real_fxsound_preset():
+    # Bass Maniac.fac was re-exported from the running FxSound with
+    # "20: Number of EQ Bands" - its centre frequencies ARE the
+    # application's 20-band ladder: a steady two-thirds-octave climb that
+    # sits evenly on a log axis. The previous table stepped evenly only to
+    # 1250 Hz and then jumped to 16000/20000 Hz, leaving the graph's top
+    # end empty.
+    assert default_band_frequencies(20) == [
+        20.0, 31.5, 40.0, 63.0, 80.0, 125.0, 160.0, 250.0, 315.0,
+        500.0, 630.0, 1000.0, 1250.0, 2000.0, 2500.0, 4000.0,
+        5000.0, 8000.0, 10000.0, 16000.0,
+    ]
+
+
+def test_every_band_table_is_even_on_a_log_axis():
+    """No consecutive gap may dwarf its neighbours.
+
+    A table that is even on a log axis has every ratio within a small
+    factor of the others; the old 20-band ladder's 1250->16000 jump was
+    8x its smallest step and read as a hole in the curve.
+    """
+    for count in (5, 10, 15, 20, 31):
+        freqs = default_band_frequencies(count)
+        ratios = [b / a for a, b in zip(freqs, freqs[1:])]
+        assert max(ratios) / min(ratios) < 2.5, \
+            f"{count}-band ladder is uneven: {ratios}"
+
+
 def test_unknown_band_count_falls_back_to_a_supported_one():
     assert len(default_band_frequencies(7)) in (5, 10, 15, 20, 31)
     assert default_band_frequencies("nonsense") == default_band_frequencies(10)
@@ -225,19 +253,30 @@ def test_reading_a_missing_file_reports_an_error(tmp_path):
 
 
 def test_the_repository_example_preset_loads():
-    example = Path(__file__).resolve().parents[2] / "Extreme Bass.fac"
+    # The canonical bundled example: a real FxSound-authored 20-band export.
+    example = Path(__file__).resolve().parents[1] / "EQExamples" / "Bass Maniac.fac"
     if not example.exists():
         pytest.skip("example preset is not present")
     preset = read_fac(example)
     assert preset.error == ""
-    assert preset.name == "Extreme Bass"
-    assert len(preset.bands) == 15
-    assert preset.bands[0] == (25.0, 2.0)
-    assert preset.bands[-1] == (16000.0, -11.0)
+    assert preset.name == "Bass Maniac"
+    assert len(preset.bands) == 20
+    assert preset.bands[0] == (20.0, 6.0)
+    assert preset.bands[-1] == (16000.0, -5.0)
+
+
+def test_the_bundled_bass_maniac_preset_uses_the_default_20_band_ladder():
+    example = Path(__file__).resolve().parents[1] / "EQExamples" / "Bass Maniac.fac"
+    if not example.exists():
+        pytest.skip("example preset is not present")
+    preset = read_fac(example)
+    assert preset.error == ""
+    assert preset.declared_bands == 20
+    assert [f for f, _g in preset.bands] == default_band_frequencies(20)
 
 
 def test_the_example_preset_survives_a_load_and_save(tmp_path):
-    example = Path(__file__).resolve().parents[2] / "Extreme Bass.fac"
+    example = Path(__file__).resolve().parents[1] / "EQExamples" / "Bass Maniac.fac"
     if not example.exists():
         pytest.skip("example preset is not present")
     profile, error = AudioProfile.from_fac(example)
@@ -388,3 +427,72 @@ def test_shrinking_the_band_count_bypasses_the_extra_filters():
     chain.process(out)
     assert dsp.spectrum_peak_db(signal, out, SAMPLE_RATE, 1000.0) == \
         pytest.approx(0.0, abs=0.01)
+
+
+# ------------------------------------------------- output switching safety --
+
+
+class _StubEngine:
+    """Just enough AudioEngine to exercise the output-switch guard."""
+
+    def __init__(self):
+        from ps3hub.audio.engine import AudioEngine
+        # Bind the real method to this stub so the guard is the code under
+        # test, not a re-implementation of it.
+        self.set_output_device = AudioEngine.set_output_device.__get__(self)
+        self.OUTPUT_SWITCH_COOLDOWN = AudioEngine.OUTPUT_SWITCH_COOLDOWN
+        self._last_output_switch = 0.0
+        self._auto_output = False
+        self._fxsound = None
+
+    def default_endpoint(self):
+        return None
+
+
+def _count_switches(monkeypatch) -> list:
+    """Record calls to the real COM switch instead of touching audio."""
+    attempts: list = []
+    monkeypatch.setattr(
+        "ps3hub.audio.device_monitor.set_default_render_endpoint",
+        lambda device_id: (attempts.append(device_id), (True, ""))[1])
+    return attempts
+
+
+def test_repeated_output_switches_are_rate_limited(monkeypatch):
+    engine = _StubEngine()
+    attempts = _count_switches(monkeypatch)
+
+    first = engine.set_output_device("{a}")
+    second = engine.set_output_device("{b}")
+    assert first[0] is True
+    assert second[0] is False, "a second switch should have been refused"
+    assert len(attempts) == 1, attempts
+    assert "break audio device detection" in second[1]
+
+
+def test_the_rate_limit_can_be_overridden_deliberately(monkeypatch):
+    engine = _StubEngine()
+    attempts = _count_switches(monkeypatch)
+    assert engine.set_output_device("{a}")[0] is True
+    assert engine.set_output_device("{b}", force=True)[0] is True
+    assert len(attempts) == 2
+
+
+def test_switching_to_the_current_device_does_nothing(monkeypatch):
+    engine = _StubEngine()
+    attempts = _count_switches(monkeypatch)
+
+    class _Same:
+        device_id = "{a}"
+    monkeypatch.setattr(engine, "default_endpoint", lambda: _Same())
+    assert engine.set_output_device("{a}")[0] is True
+    assert attempts == []
+
+
+def test_no_device_id_is_refused_without_touching_audio(monkeypatch):
+    engine = _StubEngine()
+    attempts = _count_switches(monkeypatch)
+    ok, message = engine.set_output_device("")
+    assert ok is False
+    assert message
+    assert attempts == []

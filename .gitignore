@@ -12,3 +12,4 @@ poc/logs/
 poc/captures/
 captures/
 app/packaging/version_info.txt
+app/packaging/_installer_staging/

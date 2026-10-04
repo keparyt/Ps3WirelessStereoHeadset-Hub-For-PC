@@ -23,4 +23,19 @@ jobs:
 
       - name: Run the test suite
         working-directory: app
-        run: python -m pytest tests/ -q
+        run: python -m pytest tests/ -q --tb=short --junitxml=test-results.xml
+
+      - name: Report test failures as annotations
+        if: failure()
+        working-directory: app
+        shell: pwsh
+        run: |
+          if (Test-Path test-results.xml) {
+            [xml]$x = Get-Content test-results.xml
+            $x.testsuites.testsuite.testcase |
+              Where-Object { $_.failure } |
+              ForEach-Object {
+                $msg = ($_.failure.message -replace "`r?`n", ' ')
+                Write-Output "::error::$($_.classname).$($_.name) :: $msg"
+              }
+          }

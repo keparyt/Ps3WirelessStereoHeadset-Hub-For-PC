@@ -224,7 +224,12 @@ The application is being designed around the idea of a **PlayStation-style heads
 
 The exact UI and available controls are still evolving.
 
-**Screenshots will be added as the application UI stabilizes.**
+### Screenshots
+
+| | |
+|---|---|
+| ![Dashboard](app/docs/dashboard.png) | ![Audio equalizer](app/docs/audio.png) |
+| ![Mapping](app/docs/mapping.png) | ![Diagnostics](app/docs/diagnostics.png) |
 
 ---
 
@@ -390,7 +395,7 @@ The exact collections and usage pages should not be assumed to be identical acro
 │   │   ├── tray.py           battery-coloured headset tray icon
 │   │   ├── audio/            loopback DSP + FxSound CLI integration
 │   │   └── ui/               black-gold interface, toasts, equalizer
-│   └── tests/                233 unit tests + a full UI smoke test
+│   └── tests/                278 unit tests + a full UI smoke test
 │
 ├── poc/
 │   ├── ps3_headset_panel.py
@@ -433,6 +438,10 @@ has been building toward. Highlights of the current release:
   installed, the Hub drives it over its documented CLI: live equalizer,
   effects and presets, .fac import/export, gated start/install handling, and
   a focus guard so it never steals focus.
+- **One-file installer** - `PS3HeadsetHubInstaller.exe` from the
+  [releases page](https://github.com/keparyt/Ps3WirelessStereoHeadset-Hub-For-PC/releases):
+  a real installer window that copies the app, creates the shortcuts, offers
+  the FxSound install, and needs no Python and no admin rights.
 
 See **[app/README.md](app/README.md)** for the full application documentation,
 including the mapping constraints that come from the hardware, the equalizer's

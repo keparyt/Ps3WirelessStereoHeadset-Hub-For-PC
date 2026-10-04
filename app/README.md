@@ -11,6 +11,55 @@ equalizer.
 
 ![Dashboard](docs/dashboard.png)
 
+## What is new in 1.2.14
+
+* **A standalone installer exe with a proper window.**
+  `PS3HeadsetHubInstaller.exe` packs the whole application into one file and
+  shows a real installer interface - install location, tray autostart and
+  desktop-shortcut options, a live log and a launch button. No PowerShell,
+  no console; headless installs work too (`--silent`).
+* **The installers offer FxSound.** Both the GUI installer and the zip's
+  `Install.cmd` detect FxSound (the audio engine the Hub drives) and offer
+  to download and install it when it is missing, always from the official
+  release URL. The setup runs **silently** into Program Files - the only
+  click it asks for is the UAC elevation its own manifest triggers.
+  `-WithFxSound` installs without asking, `-NoFxSound` never touches it.
+* **The Hub can install FxSound itself.** Missed the option during setup,
+  or uninstalled FxSound since? When the app is missing, the Audio page's
+  button becomes **Install FxSound**: one confirmation, then the official
+  setup downloads and runs silently into Program Files (only its UAC prompt
+  needs a click), and the Hub starts it and loads its settings
+  automatically. All three surfaces - the GUI installer, `Install.cmd` and
+  the in-app button - share one implementation and the same download URL.
+
+## What is new in 1.2.13
+
+* **Master gain works, everywhere, once.** The gain slider existed twice -
+  once on the Effect profile card and again beside the equalizer - each with
+  its own value that silently overwrote the other. Both sliders now bind one
+  shared value and move together, and the range is the full −20…+20 dB the
+  engine and FxSound accept, so loading FxSound's settings can no longer
+  push the slider off its own scale.
+* **The Audio page pre-syncs from FxSound.** Opening the page loads the
+  application's live equalizer, effect levels and selected preset into the
+  Hub *before* the user edits anything - load, never push - so the first
+  slider touched continues from exactly what FxSound is running.
+* **The knob row follows the band count.** A 20-band selection showed 31
+  knobs because the status adopted from FxSound carried its full 31-band
+  table; the curve is now cut to the declared band count, and band-count
+  changes carry the current curve onto the new count instead of wiping it.
+* **FxSound stays in the tray.** Every CLI invocation - including the status
+  probe that runs when the page opens - is focus-guarded, and if a command
+  raises FxSound's window anyway, it is found by image name and hidden again.
+* **Custom band frequencies survive a drag.** Moving a point used to snap
+  the whole curve back onto the default frequency table, silently replacing
+  FxSound's own centres; the stored frequencies are now kept.
+* **One release command.** `packaging\make_release.bat` runs dependencies,
+  tests, the exe build, installer staging and the artifact report in order
+  (`--skip-tests`, `--no-clean`, `--run`, `--install` modifiers).
+
+---
+
 ## What is new in 1.2
 
 * **Black-and-gold interface.** Near-black slate surfaces, one gold accent
@@ -65,16 +114,22 @@ missing.
 
 ### Install (users, no Python needed)
 
-Grab `PS3HeadsetHub-<version>-win64.zip` from the
-[latest GitHub release](https://github.com/keparyt/Ps3WirelessStereoHeadset-Hub-For-PC/releases/latest),
-extract it anywhere, and double-click **`Install.cmd`**. The installer
-(current user only, no admin rights):
+Two ways to install, both current-user only (no admin rights):
 
-* copies the app to `%LOCALAPPDATA%\PS3HeadsetHub`
-* creates Start Menu shortcuts (**PS3 Headset Hub**, **Uninstall PS3 Headset Hub**)
-* registers **start with Windows** so the Hub sits in the system tray at
-  sign-in (`install.ps1 -NoAutostart` to skip, `-DesktopShortcut` for a
-  desktop icon)
+**`PS3HeadsetHubInstaller.exe` (recommended).** One file from the
+[latest GitHub release](https://github.com/keparyt/Ps3WirelessStereoHeadset-Hub-For-PC/releases/latest)
+— double-click it, choose the options in the window, click **Install**. It
+copies the app to `%LOCALAPPDATA%\PS3HeadsetHub`, creates the Start Menu
+shortcuts, registers start-with-Windows, and offers to download and silently
+install **FxSound** (the audio engine the Hub drives) when it is missing —
+the FxSound setup only asks for its own UAC prompt. Headless:
+`PS3HeadsetHubInstaller.exe --silent` (add `--no-fxsound`, `--no-autostart`,
+`--target <dir>` as needed; `--uninstall` removes everything).
+
+**`PS3HeadsetHub-<version>-win64.zip`.** Extract it anywhere and double-click
+**`Install.cmd`**. It does the same per-user install as above and, at the
+end, offers the same silent FxSound install (`install.ps1 -NoFxSound` skips
+the offer, `-WithFxSound` installs without asking).
 
 Uninstall from the Start Menu entry — settings in
 `%APPDATA%\PS3HeadsetHub` are kept unless you delete that folder too.
@@ -82,16 +137,29 @@ Uninstall from the Start Menu entry — settings in
 ### Build (maintainers)
 
 ```powershell
-packaging\build.bat
+packaging\make_release.bat
 ```
+
+One command runs the whole pipeline: dependency install, the test suite, the
+exe build, installer staging and the artifact report — then prints what to do
+next (`--run` to try the fresh build, `--install` to install it for the
+current user immediately, `--skip-tests` and `--no-clean` to iterate faster).
 
 That produces a **onedir** application — `build\PS3HeadsetHub\PS3HeadsetHub.exe`
 next to its `_internal` folder (keep the two together) — the install helpers
-at `build\` root, a self-contained `build\PS3HeadsetHub-<version>-win64.zip`
-ready to share, and `build\build-report.txt` with the version, commit and
-checksums. The folder layout starts faster than a single-file exe and is far
-less likely to be quarantined by antivirus software. From a shell instead of
-the double-click: `python packaging/build_exe.py --clean`.
+at `build\` root (Install.cmd, install.ps1, uninstall.cmd), the standalone
+gui installer `build\PS3HeadsetHubInstaller.exe` (one file, window
+interface, packs the whole app, offers the silent FxSound install), a
+self-contained `build\PS3HeadsetHub-<version>-win64.zip` ready to share
+(extract, double-click **Install.cmd**; uninstall with the Start Menu entry
+or **uninstall.cmd**), and `build\build-report.txt` with the version, commit
+and checksums. When
+[Inno Setup 6](https://jrsoftware.org/isinfo.php) is installed, a classic
+`PS3HeadsetHub-<version>-setup.exe` is built too — optional; the zip
+installer is complete without it. The folder layout starts faster than a
+single-file exe and is far less likely to be quarantined by antivirus
+software. From a shell instead of the double-click: `python
+packaging/build_exe.py --clean`.
 
 **Releases are automated:** pushing a tag `v<version>` (e.g. `v1.2.10`,
 matching `APP_VERSION` in `app/ps3hub/__init__.py`) runs the test suite on
@@ -154,6 +222,8 @@ plus a live feed of detected inputs and what each one triggered.
 headset, and it is selected for you. Pick an action, and it saves
 automatically. Bindings can be exported and imported as JSON.
 
+![Mapping](docs/mapping.png)
+
 Default bindings, which you can change or remove entirely:
 
 | Headset control | Action |
@@ -175,9 +245,13 @@ counters, every HID collection with its open state and report count, any report
 shape the decoder does not recognise (with raw bytes), and the live log with a
 one-click copy for bug reports.
 
+![Diagnostics](docs/diagnostics.png)
+
 **Settings** holds the detection tuning above, the toast switches (connect,
 volume, audio processing, low battery, shortcut executed, always-Windows
 delivery), and an "open every HID collection" switch for the case below.
+
+![Settings](docs/settings.png)
 
 ### If no inputs are detected
 
@@ -249,6 +323,8 @@ curve, and a dB readout on every point. Beside it are the four controls
 FxSound puts next to its own curve — **Master gain**, **Volume leveling**,
 **Filter Q** and **Balance**.
 
+![Audio](docs/audio.png)
+
 **Dragging** a point moves it vertically, between −12 and +12 dB.
 **Double-clicking** a point flattens just that band. The x axis is
 logarithmic, because that is how people hear: an octave is the same width on
@@ -259,13 +335,16 @@ the Hub sends the band gains through the documented CLI
 (`--set_band_gain`, `--set_band_freq`, `--num_bands`, `--filter_q`,
 `--volume_leveling`, `--balance`), so the EQ runs on FxSound's own drivers and
 DSP rather than a reimplementation of it. Every control is heard live: the
-curve, the four sliders and the five effect levels are pushed to FxSound as
+curve, the sliders and the five effect levels are pushed to FxSound as
 they move, coalesced into at most one CLI invocation per 120 ms on a
 background thread (band-count changes ride the same line, and the Hub tracks
-the application's own band count so a change is never missed). A focus guard
-restores the foreground window after every spawn, so FxSound never raises
-itself over the user's work - and the Hub starts it hidden. With the Hub's own
-loopback engine
+the application's own band count so a change is never missed). Opening the
+Audio page **pre-syncs from FxSound** — its live settings are loaded into the
+Hub, never pushed back — so editing always starts from the configuration the
+application is actually running. A focus guard restores the foreground window
+after every spawn, and a window guard re-hides FxSound's main window if a
+command raised it, so the application stays in its tray where it belongs.
+With the Hub's own loopback engine
 the same curve is applied as one peaking biquad per non-flat band, which the
 test suite measures: a +6 dB band comes out **+6.00 dB** at its own centre
 frequency, and **0.07 dB** away from it.
@@ -284,8 +363,9 @@ presets are the same thing:
   FxSound reports, built-in and user-defined.
 * **Save as…** stores the running settings as a new FxSound user preset.
 
-Loading `Extreme Bass.fac` and exporting it again produces a **byte-identical**
-file, which is the test that the format is understood rather than approximated.
+Loading `EQExamples/Bass Maniac.fac` and saving it again produces a
+**byte-identical** file, which is the test that the format is understood rather
+than approximated.
 
 The format is not documented by the vendor, so it was established empirically
 against FxSound 1.2.13.0. Two details are worth knowing if you edit a preset by

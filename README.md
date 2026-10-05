@@ -151,7 +151,6 @@ The project is actively being developed.
 | Protocol unit tests | ✅ |
 | Full PC headset controls | 🚧 |
 | HID output/control protocol | 🚧 |
-| Pairing research | 🚧 |
 | Music/media controls | 🚧 |
 | Complete audio integration | 🚧 |
 

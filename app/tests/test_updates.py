@@ -6,6 +6,9 @@ control, so these run offline and deterministically.
 
 from __future__ import annotations
 
+import threading
+import time
+
 from ps3hub.updates import (
     UpdateChecker,
     UpdateInfo,
@@ -108,12 +111,12 @@ def test_checker_throttles_to_one_fetch_per_interval():
 
     checker = UpdateChecker(fetch=fake_fetch, interval=3600)
     first = checker.check()
-    # A fast fake fetch may land before check() returns; either None (worker
-    # still running) or the result (already cached) is acceptable.
-    import time
-    deadline = time.monotonic() + 2
-    while not calls and time.monotonic() < deadline:
-        time.sleep(0.02)
+    # Wait for the background worker to finish (result stored), not merely
+    # to have started: on a loaded machine the thread can be preempted
+    # between running the fetch and publishing the result.
+    deadline = time.monotonic() + 10
+    while checker.last_result is None and time.monotonic() < deadline:
+        time.sleep(0.01)
     # A second check inside the throttle window returns the cached answer
     # without a new fetch.
     assert checker.check() is not None
@@ -129,15 +132,16 @@ def test_checker_force_bypasses_the_throttle():
         return None
 
     checker = UpdateChecker(fetch=fake_fetch, interval=3600)
-    import time
     checker.check()
-    deadline = time.monotonic() + 2
-    while not calls and time.monotonic() < deadline:
-        time.sleep(0.02)
+    # Let the first worker run to completion, otherwise the in-flight guard
+    # swallows the forced check and the second fetch never happens.
+    deadline = time.monotonic() + 10
+    while checker._in_flight and time.monotonic() < deadline:
+        time.sleep(0.01)
     checker.check(force=True)
-    deadline = time.monotonic() + 2
+    deadline = time.monotonic() + 10
     while len(calls) < 2 and time.monotonic() < deadline:
-        time.sleep(0.02)
+        time.sleep(0.01)
     assert len(calls) == 2
 
 
@@ -156,5 +160,11 @@ def test_checker_callback_receives_the_result():
         done.set()
 
     checker.check(on_done=on_done)
-    assert done.wait(2)
+    # The callback fires on the worker thread right after the result is
+    # published; wait for that completion rather than a bare scheduling
+    # hope, then give the callback its own generous window.
+    deadline = time.monotonic() + 10
+    while checker._in_flight and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert done.wait(10)
     assert seen and seen[0].version == "2.0.0"

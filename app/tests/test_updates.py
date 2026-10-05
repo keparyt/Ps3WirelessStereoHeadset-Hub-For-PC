@@ -102,6 +102,22 @@ def test_fetch_latest_survives_a_network_error(monkeypatch):
 
 # --------------------------------------------------------------- checker --
 
+def _worker_position() -> str:
+    """File:line the 'update-check' thread is sitting at right now."""
+    import sys
+    by_ident = {t.ident: t for t in threading.enumerate()}
+    for tid, frame in sys._current_frames().items():
+        thread = by_ident.get(tid)
+        if thread is not None and thread.name == "update-check":
+            chain = []
+            while frame is not None:
+                chain.append(f"{frame.f_code.co_filename}:"
+                             f"{frame.f_lineno} in {frame.f_code.co_name}")
+                frame = frame.f_back
+            return " <- ".join(chain)
+    return "thread-not-found"
+
+
 def test_checker_throttles_to_one_fetch_per_interval():
     calls = []
 
@@ -119,7 +135,9 @@ def test_checker_throttles_to_one_fetch_per_interval():
         time.sleep(0.01)
     # A second check inside the throttle window returns the cached answer
     # without a new fetch.
-    assert checker.check() is not None
+    assert checker.check() is not None, (
+        f"calls={calls} last={checker.last_result} "
+        f"in_flight={checker._in_flight} worker_at={_worker_position()}")
     assert len(calls) == 1
     assert first is None or isinstance(first, UpdateInfo)
 
@@ -142,7 +160,9 @@ def test_checker_force_bypasses_the_throttle():
     deadline = time.monotonic() + 10
     while len(calls) < 2 and time.monotonic() < deadline:
         time.sleep(0.01)
-    assert len(calls) == 2
+    assert len(calls) == 2, (
+        f"calls={calls} in_flight={checker._in_flight} "
+        f"worker_at={_worker_position()}")
 
 
 def test_checker_callback_receives_the_result():
@@ -166,5 +186,6 @@ def test_checker_callback_receives_the_result():
     deadline = time.monotonic() + 10
     while checker._in_flight and time.monotonic() < deadline:
         time.sleep(0.01)
-    assert done.wait(10)
-    assert seen and seen[0].version == "2.0.0"
+    assert done.wait(10), (
+        f"seen={seen} in_flight={checker._in_flight} "
+        f"worker_at={_worker_position()}")

@@ -118,6 +118,14 @@ def _worker_position() -> str:
     return "thread-not-found"
 
 
+def test_a_fresh_checker_is_not_throttled_by_boot_time():
+    # time.monotonic() on Windows counts from boot; a fresh CI runner (or a
+    # just-rebooted PC) is often up for less than the 24 h interval, and a
+    # 0.0 initialization would read as "checked moments ago".
+    checker = UpdateChecker(fetch=lambda: None, interval=3600)
+    assert time.monotonic() - checker._last_check >= checker._interval
+
+
 def test_checker_throttles_to_one_fetch_per_interval():
     calls = []
 

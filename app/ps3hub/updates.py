@@ -121,7 +121,12 @@ class UpdateChecker:
         self._fetch = fetch
         self._interval = interval
         self._lock = threading.Lock()
-        self._last_check = 0.0
+        # "Never checked" must be expressed relative to the monotonic clock,
+        # not as 0.0: time.monotonic() on Windows counts from system boot, so
+        # on a machine that has been up for less than the interval (a freshly
+        # booted PC, a new CI runner) 0.0 would read as "checked moments ago"
+        # and silently suppress every check for the rest of the day.
+        self._last_check = time.monotonic() - interval
         self._last_result: UpdateInfo | None = None
         self._in_flight = False
 

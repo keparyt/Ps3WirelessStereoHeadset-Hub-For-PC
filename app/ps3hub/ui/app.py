@@ -307,6 +307,10 @@ class HubApp(tk.Tk):
             self._content,
             engine_provider=lambda: self._audio,
             on_changed=self._schedule_save,
+            # The Audio page's no-access overlay can send the user to
+            # Settings; the switch happens on the Tk thread via the queue.
+            on_navigate=lambda key: self._ui_requests.put(
+                lambda k=key: self._select_view(k)),
         )
         self._settings = SettingsView(
             self._content,

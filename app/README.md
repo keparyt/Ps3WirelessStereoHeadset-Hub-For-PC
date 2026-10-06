@@ -11,6 +11,30 @@ equalizer.
 
 ![Dashboard](docs/dashboard.png)
 
+## What is new in 1.2.15
+
+* **The Audio page cannot be used halfway any more.** While FxSound is
+  missing or stopped, the page is covered by a **no-access overlay** instead
+  of a half-working one: nothing behind it can be clicked, and nothing behind
+  it can be reached with the keyboard either. The overlay is not just a
+  notice - it proposes the fix, with **Start FxSound** as its primary button
+  when the application is installed but stopped and **Install FxSound** when
+  it is missing, beside the download page, a status re-check and a link to
+  Settings. It lifts by itself the moment FxSound answers - started from the
+  overlay, the tray or by hand - and returns if it goes away again.
+* **No more pop-up prompts on that page.** Asking "start FxSound now?" with a
+  dialog is gone: the overlay's buttons are the only path, and a control that
+  needs FxSound cannot be reached while it is up.
+* **Pressing the button is the consent.** The FxSound install no longer asks
+  for confirmation twice: the overlay's (or the card's) **Install FxSound**
+  button starts the silent download, the narration says exactly what is
+  happening, and the setup's own UAC prompt remains the OS-level
+  confirmation.
+* **Continue without FxSound.** A secondary **Use the Hub's own audio
+  controls** button reveals what genuinely does not need the application -
+  output-device switching and the Hub's own DSP - while the equalizer,
+  effects and presets stay locked, exactly as they were.
+
 ## What is new in 1.2.14
 
 * **A standalone installer exe with a proper window.**
@@ -299,12 +323,19 @@ that application through its documented command-line interface (`--power`,
 and not copied; the integration only sends CLI commands to an installation the
 user already has, and the Hub works fully without it.
 
-The FxSound features on the Audio page are gated on the application actually
-running. When FxSound is installed but stopped, using one of those features
-asks whether to start it now (and the card offers a **Start FxSound**
-button); when it is not installed at all, the Hub says so and links to the
-[official download page](https://www.fxsound.com/download). The Hub never
-starts or downloads anything unattended.
+The FxSound features on the Audio page are honest about their dependency
+out loud: while the application is missing or stopped, the entire page sits
+behind a **no-access overlay**. Nothing on the page can be clicked or reached
+with the keyboard, and the overlay is what offers the way out - **Start
+FxSound** when it is installed but stopped, **Install FxSound** when it is
+missing, plus the download page, a status re-check and a link to Settings. It
+clears itself as soon as FxSound answers and returns if it goes away. There
+are no pop-up prompts on this page.
+
+The Hub never starts or downloads anything unattended: both actions need the
+Button press. A secondary **Use the Hub's own audio controls** button reveals
+the parts that do not need FxSound at all - the output device selector and the
+Hub's own DSP - while the equalizer, presets and effects stay locked.
 
 Before any FxSound feature is used - and whenever the Audio page opens while
 FxSound is already running - the Hub loads **all** of the application's

@@ -483,6 +483,8 @@ class _MirrorStatus:
     found: bool = True
     running: bool = True
     error: str = ""
+    #: FxSound's own power switch, as FxSoundStatus carries it.
+    power: bool = False
     selected_preset: str = ""
     selected_output: str = ""
     effects: dict = field(default_factory=dict)
@@ -1286,3 +1288,102 @@ def test_imported_curve_is_pushed_without_preset_selection(monkeypatch):
     joined = " ".join(" ".join(c) for c in calls)
     assert "--set_band_gain=" in joined, "the curve must be pushed"
     assert "--preset=" not in joined, "import must not select a preset"
+
+
+# --------------------------------------------- audio page no-access overlay ---
+
+def test_overlay_is_absent_when_fxsound_is_running():
+    from ps3hub.ui.view_audio import overlay_for
+
+    assert overlay_for(True, True) is None
+
+
+def test_overlay_proposes_start_when_fxsound_is_installed_but_stopped():
+    from ps3hub.ui.view_audio import overlay_for
+
+    copy = overlay_for(True, False)
+    assert copy is not None
+    assert copy.kind == "stopped"
+    assert copy.primary == "Start FxSound"
+    assert copy.primary_action == "start"
+
+
+def test_overlay_proposes_install_when_fxsound_is_missing():
+    from ps3hub.ui.view_audio import overlay_for
+
+    copy = overlay_for(False, False)
+    assert copy is not None
+    assert copy.kind == "missing"
+    assert copy.primary == "Install FxSound"
+    assert copy.primary_action == "install"
+
+
+def _fx_status(found: bool, running: bool):
+    """A status shaped like FxSoundStatus, for the view to render."""
+    return _MirrorStatus(found=found, running=running)
+
+
+def test_the_whole_page_is_covered_while_fxsound_is_unavailable():
+    engine = _MirrorEngine([], [(0, 0)])
+    with _mirror_view(engine) as view:
+        view._page_open = True
+        view._render_fxsound(_fx_status(False, False))
+        assert view._overlay_shown is True
+        assert view._overlay.winfo_manager() == "place"
+        assert str(view._overlay_primary.cget("text")) == "Install FxSound"
+        # The equalizer needs FxSound, and the page's own controls are out of
+        # reach behind the overlay.
+        assert view._fx_ui_enabled is False
+        assert str(view._gain_scale.cget("state")) == "disabled"
+        assert str(view._eq_control_scales[0].cget("state")) == "disabled"
+        assert str(view._effect_scales["bass"].cget("state")) == "disabled"
+
+
+def test_the_overlay_clears_and_returns_with_fxsound():
+    engine = _MirrorEngine([], [(0, 0)])
+    with _mirror_view(engine) as view:
+        view._page_open = True
+        view._render_fxsound(_fx_status(True, False))
+        assert view._overlay_shown is True
+        assert str(view._overlay_primary.cget("text")) == "Start FxSound"
+        # FxSound answers - started from the overlay, the tray or by hand:
+        # the overlay lifts on its own.
+        view._render_fxsound(_fx_status(True, True))
+        assert view._overlay_shown is False
+        assert view._overlay.winfo_manager() == ""
+        # The output selector goes back to read-only, never editable.
+        assert str(view._output_box.cget("state")) == "readonly"
+        # ... and returns if it goes away again.
+        view._render_fxsound(_fx_status(True, False))
+        assert view._overlay_shown is True
+        assert str(view._output_box.cget("state")) == "disabled"
+
+
+def test_continuing_past_the_overlay_keeps_fxsound_locked():
+    engine = _MirrorEngine([], [(0, 0)])
+    with _mirror_view(engine) as view:
+        view._page_open = True
+        view._render_fxsound(_fx_status(True, False))
+        view._overlay_continue_without()
+        assert view._overlay_shown is False
+        # The Hub's own controls are reachable again ...
+        assert str(view._gain_scale.cget("state")) == "normal"
+        assert str(view._output_box.cget("state")) == "readonly"
+        # ... but nothing that needs FxSound is.
+        assert view._fx_ui_enabled is False
+        assert str(view._preset_load.cget("state")) == "disabled"
+        # Leaving the page re-arms it for the next visit.
+        view.on_page_closed()
+        view.on_page_open()
+        view._render_fxsound(_fx_status(True, False))
+        assert view._overlay_shown is True
+
+
+def test_the_audio_page_never_prompts_with_a_dialog():
+    """The overlay replaced the yes/no prompts (spec R16)."""
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "ps3hub" / "ui" /
+              "view_audio.py").read_text(encoding="utf-8")
+    assert "askyesno" not in source
+    assert "showwarning" not in source

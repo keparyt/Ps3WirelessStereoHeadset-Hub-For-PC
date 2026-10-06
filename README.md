@@ -394,7 +394,7 @@ The exact collections and usage pages should not be assumed to be identical acro
 │   │   ├── tray.py           battery-coloured headset tray icon
 │   │   ├── audio/            loopback DSP + FxSound CLI integration
 │   │   └── ui/               black-gold interface, toasts, equalizer
-│   └── tests/                275 unit tests + a full UI smoke test
+│   └── tests/                282 unit tests + a full UI smoke test
 │
 ├── poc/
 │   ├── ps3_headset_panel.py
@@ -437,6 +437,10 @@ has been building toward. Highlights of the current release:
   installed, the Hub drives it over its documented CLI: live equalizer,
   effects and presets, .fac import/export, gated start/install handling, and
   a focus guard so it never steals focus.
+- **Audio page no-access overlay** - while FxSound is missing or stopped the
+  whole Audio page is covered, and the overlay itself proposes starting or
+  installing it; nothing behind it is reachable, no prompt is ever raised, and
+  it clears the moment FxSound is up again.
 - **One-file installer** - `PS3HeadsetHubInstaller.exe` from the
   [releases page](https://github.com/keparyt/Ps3WirelessStereoHeadset-Hub-For-PC/releases):
   a real installer window that copies the app, creates the shortcuts, offers

@@ -7,8 +7,11 @@ installed.
 
 The FxSound features are honest about their dependency: the equalizer card
 and the preset controls only work when a FxSound instance is up and
-answering. When it is installed but stopped the view offers to start it; when
-it is not installed at all the view says so and points at the download page.
+answering. Rather than prompt, the view covers the **whole page** with a
+no-access overlay while the application is missing or stopped, and that
+overlay is what offers to start or install it. Everything behind the overlay
+is unreachable - including with the keyboard - and the overlay clears itself
+as soon as FxSound answers.
 Before any FxSound feature is used, the view loads **all** of the
 application's presets and mirrors its current settings into the active
 profile, so the Hub shows the same exact configuration FxSound is running.
@@ -24,19 +27,87 @@ import sys
 import threading
 import time
 import tkinter as tk
-from dataclasses import replace as dataclass_replace
+from dataclasses import dataclass, replace as dataclass_replace
 from pathlib import Path
-from tkinter import messagebox as tkmessagebox
 from tkinter import ttk
 from typing import Any, Callable
 
 from ..applog import get_logger
-from .theme import ABYSS, FAINT, FAULT, GOLD, IDLE, LIVE, MUTED, PANEL, PAPER, WARN, fonts
+from .theme import (ABYSS, FAINT, FAULT, GOLD, IDLE, LIVE, MUTED, PANEL,
+                    PAPER, RIDGE, WARN, fonts)
 from .widget_eq import BAND_COUNTS, EQGraph, EQKnobRow
 from ..audio.fac import default_band_frequencies
 from .widgets import Banner, Card, KeyValue, ScrollFrame, StatusPill
 
 log = get_logger("ui.audio")
+
+
+@dataclass(frozen=True)
+class FxSoundOverlay:
+    """What the Audio page's no-access overlay says and offers.
+
+    One of these applies while FxSound cannot be used: every
+    FxSound-dependent control on the page is unreachable, and the overlay is
+    what proposes to start or install the application instead of a pop-up
+    prompt.
+    """
+
+    kind: str            # "missing" or "stopped"
+    pill: str            # the status pill's wording
+    tone: str            # its colour: FAULT when missing, WARN when stopped
+    headline: str
+    body: str
+    hint: str            # the line above the buttons
+    primary: str         # the primary action's label
+    primary_action: str  # "install" or "start"
+
+
+def overlay_for(found: bool, running: bool) -> FxSoundOverlay | None:
+    """The overlay that applies, or ``None`` when FxSound is usable.
+
+    Pure, so the wording and the choice of primary action are testable
+    without a Tk display. ``found``/``running`` come straight from an
+    :class:`~ps3hub.audio.fxsound_backend.FxSoundStatus`.
+    """
+    if found and running:
+        return None
+    if not found:
+        return FxSoundOverlay(
+            kind="missing",
+            pill="FxSound not installed",
+            tone=FAULT,
+            headline="FxSound is not installed",
+            body=(
+                "This page's equalizer, presets and effects are driven by "
+                "FxSound: the Hub talks to it through its own command line, "
+                "so the application has to be installed and running before "
+                "these controls can be used."
+            ),
+            hint=(
+                "The official setup downloads and installs silently - the "
+                "only thing it asks for is the Windows confirmation."
+            ),
+            primary="Install FxSound",
+            primary_action="install",
+        )
+    return FxSoundOverlay(
+        kind="stopped",
+        pill="FxSound not running",
+        tone=WARN,
+        headline="FxSound is not running",
+        body=(
+            "This page's equalizer, presets and effects are driven by "
+            "FxSound: the Hub talks to it through its own command line, so "
+            "the application has to be running before these controls can be "
+            "used."
+        ),
+        hint=(
+            "FxSound starts hidden and stays in its own tray, so it never "
+            "takes focus from what you are doing."
+        ),
+        primary="Start FxSound",
+        primary_action="start",
+    )
 
 
 def _example_presets() -> list[tuple[str, str, Any]]:
@@ -109,10 +180,14 @@ class AudioView(tk.Frame):
         master,
         engine_provider: Callable[[], Any],
         on_changed: Callable[[], None],
+        on_navigate: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__(master, bg=ABYSS)
         self._engine_provider = engine_provider
         self._on_changed = on_changed
+        #: Lets the overlay's "Go to Settings" switch pages without the view
+        #: knowing anything about the window. Optional: tests ignore it.
+        self._on_navigate = on_navigate
         self._suspend = False
         self._eq_loaded = False
         # Until this monotonic time, ignore FxSound power echoes: the status
@@ -123,12 +198,22 @@ class AudioView(tk.Frame):
         # the FxSound features are currently unlocked.
         self._last_fx_status: Any = None
         self._fx_ui_enabled = False
+        # The no-access overlay: whether the Audio page is the view on
+        # screen, whether the user chose to continue past the overlay for
+        # this visit, and whether it is covering the page right now.
+        self._page_open = False
+        self._overlay_dismissed = False
+        self._overlay_shown = False
+        self._overlay_copy: FxSoundOverlay | None = None
         # The page-open pre-sync runs once per visit; refresh() resets the
         # flag whenever the page is closed elsewhere.
         self._fx_loaded_for_page = False
         # The automatic FxSound install (download + silent setup) runs in a
         # worker thread and talks to the UI through this queue.
         self._fx_install_busy = False
+        #: The equalizer card's own sliders (volume leveling, filter Q,
+        #: balance), so the overlay can cover them too.
+        self._eq_control_scales: list = []
         self._fx_install_log: queue.Queue = queue.Queue()
         # Live-mirroring bookkeeping: the status.json write we last saw, and
         # a fingerprint of the status we last applied, so the poll can tell
@@ -213,8 +298,9 @@ class AudioView(tk.Frame):
         self._output_box = ttk.Combobox(
             output, textvariable=self._output_var, state="readonly", width=34)
         self._output_box.pack(side="left")
-        ttk.Button(output, text="Use this output",
-                   command=self._on_set_output).pack(side="left", padx=(8, 0))
+        self._output_button = ttk.Button(output, text="Use this output",
+                                         command=self._on_set_output)
+        self._output_button.pack(side="left", padx=(8, 0))
         self._auto_output_var = tk.BooleanVar(value=False)
         self._auto_output_check = ttk.Checkbutton(
             output, text="Switch to it when the headset connects",
@@ -236,6 +322,9 @@ class AudioView(tk.Frame):
         grid.pack(fill="x")
         grid.columnconfigure(1, weight=1)
         self._effect_vars: dict[str, tk.DoubleVar] = {}
+        #: The effect scales themselves, so the overlay can put them out of
+        #: reach while it covers the page.
+        self._effect_scales: dict[str, ttk.Scale] = {}
         for row, (key, label) in enumerate((
             ("bass", "Bass"),
             ("clarity", "Clarity"),
@@ -255,6 +344,7 @@ class AudioView(tk.Frame):
             var.trace_add("write", lambda *_a, lab=value_label, v=var:
                           lab.configure(text=f"{v.get():.1f}"))
             self._effect_vars[key] = var
+            self._effect_scales[key] = scale
 
         gain_row = tk.Frame(effects.body, bg=PANEL)
         gain_row.pack(fill="x", pady=(12, 0))
@@ -264,9 +354,10 @@ class AudioView(tk.Frame):
         # the old -12..+12 slider could not reach the values FxSound itself
         # reports, so adopting its state shoved the slider off-scale.
         self._gain_var = self._eq_vars["master_gain_db"] = tk.DoubleVar(value=0.0)
-        ttk.Scale(gain_row, from_=-20.0, to=20.0, variable=self._gain_var,
-                  command=lambda _v: self._on_effect()).pack(
-            side="left", fill="x", expand=True, padx=12)
+        self._gain_scale = ttk.Scale(gain_row, from_=-20.0, to=20.0,
+                                     variable=self._gain_var,
+                                     command=lambda _v: self._on_effect())
+        self._gain_scale.pack(side="left", fill="x", expand=True, padx=12)
         self._gain_label = tk.Label(gain_row, text="0.0 dB", bg=PANEL, fg=MUTED,
                                     font=font.code_small, width=8)
         self._gain_label.pack(side="right")
@@ -275,8 +366,9 @@ class AudioView(tk.Frame):
                 text=f"{self._gain_var.get():+.1f} dB")
         )
 
-        ttk.Button(effects.body, text="Reset profile",
-                   command=self._on_reset_profile).pack(anchor="w", pady=(12, 0))
+        self._reset_profile_button = ttk.Button(
+            effects.body, text="Reset profile", command=self._on_reset_profile)
+        self._reset_profile_button.pack(anchor="w", pady=(12, 0))
 
         # -- equalizer ------------------------------------------------------------
         equalizer = Card(root, "Equalizer", "drag a point to shape the curve")
@@ -312,6 +404,182 @@ class AudioView(tk.Frame):
         ttk.Button(buttons, text="Sync from FxSound now",
                    command=self._on_sync_from_fxsound).pack(side="left", padx=(8, 0))
 
+        # -- no-access overlay ----------------------------------------------------
+        # Covers the entire page while FxSound is unavailable. Built here,
+        # never placed by _build: _sync_overlay decides when it is up.
+        self._build_overlay()
+
+    # ----------------------------------------------------- no-access overlay --
+
+    def _build_overlay(self) -> None:
+        """Build the whole-page overlay that replaced the FxSound prompts.
+
+        The page is not disabled as a whole: the overlay sits on top of it
+        and swallows the clicks, while :meth:`_gate_ui` keeps the controls
+        behind it out of the keyboard's reach. It is placed over the visible
+        page area rather than inside the scrolling content, so it can never
+        be scrolled away from.
+        """
+        font = fonts()
+        self._overlay = tk.Frame(self, bg=ABYSS)
+        card = tk.Frame(self._overlay, bg=PANEL, highlightthickness=1,
+                        highlightbackground=RIDGE)
+        card.place(relx=0.5, rely=0.5, anchor="center")
+        inner = tk.Frame(card, bg=PANEL)
+        inner.pack(padx=36, pady=32)
+
+        self._overlay_pill = StatusPill(inner, "FxSound unavailable", WARN,
+                                        bg=PANEL, width=210)
+        self._overlay_pill.pack(anchor="w")
+
+        self._overlay_headline = tk.Label(
+            inner, text="", bg=PANEL, fg=PAPER, font=font.headline,
+            anchor="w", justify="left",
+        )
+        self._overlay_headline.pack(fill="x", pady=(12, 0))
+
+        self._overlay_body = tk.Label(
+            inner, text="", bg=PANEL, fg=MUTED, font=font.base,
+            anchor="w", justify="left", wraplength=520,
+        )
+        self._overlay_body.pack(fill="x", pady=(8, 0))
+
+        # The same line the FxSound card shows (probe result, download
+        # progress, a start failure), so the overlay never says less.
+        self._overlay_detail = tk.Label(
+            inner, text="", bg=PANEL, fg=FAINT, font=font.small,
+            anchor="w", justify="left", wraplength=520,
+        )
+        self._overlay_detail.pack(fill="x", pady=(10, 0))
+
+        self._overlay_hint = tk.Label(
+            inner, text="", bg=PANEL, fg=FAINT, font=font.tiny,
+            anchor="w", justify="left", wraplength=520,
+        )
+        self._overlay_hint.pack(fill="x", pady=(10, 16))
+
+        primary_row = tk.Frame(inner, bg=PANEL)
+        primary_row.pack(fill="x")
+        self._overlay_primary = ttk.Button(
+            primary_row, text="Start FxSound", style="Accent.TButton",
+            command=self._overlay_primary_action,
+        )
+        self._overlay_primary.pack(side="left")
+        self._overlay_download = ttk.Button(
+            primary_row, text="Open the download page",
+            command=self._on_open_download_page,
+        )
+        self._overlay_download.pack(side="left", padx=(8, 0))
+
+        secondary_row = tk.Frame(inner, bg=PANEL)
+        secondary_row.pack(fill="x", pady=(8, 0))
+        self._overlay_check = ttk.Button(
+            secondary_row, text="Check FxSound status",
+            command=self._probe_fxsound,
+        )
+        self._overlay_check.pack(side="left")
+        self._overlay_settings = ttk.Button(
+            secondary_row, text="Go to Settings",
+            command=self._overlay_go_settings,
+        )
+        self._overlay_settings.pack(side="left", padx=(8, 0))
+        self._overlay_continue = ttk.Button(
+            secondary_row, text="Use the Hub's own audio controls",
+            style="Ghost.TButton", command=self._overlay_continue_without,
+        )
+        self._overlay_continue.pack(side="left", padx=(8, 0))
+
+        tk.Label(
+            inner,
+            text=("The Hub's own processing and output switching work "
+                  "without FxSound; the equalizer, effects and presets on "
+                  "this page need it."),
+            bg=PANEL, fg=FAINT, font=font.tiny, anchor="w", justify="left",
+            wraplength=520,
+        ).pack(fill="x", pady=(14, 0))
+
+    def _sync_overlay(self) -> None:
+        """Cover the page while FxSound is unavailable, or uncover it.
+
+        Driven from :meth:`_gate_ui`, so the overlay and the gating can
+        never disagree about whether the page is locked. An unknown status
+        (nothing probed yet) is not a reason to cover: the page shows its
+        "checking" state instead.
+        """
+        if not hasattr(self, "_overlay"):
+            return
+        status = self._last_fx_status
+        copy = (overlay_for(bool(getattr(status, "found", False)),
+                            bool(getattr(status, "running", False)))
+                if status is not None else None)
+        if copy is not None and self._page_open and not self._overlay_dismissed:
+            self._show_overlay(copy)
+            return
+        self._overlay_shown = False
+        self._overlay.place_forget()
+
+    def _show_overlay(self, copy: FxSoundOverlay) -> None:
+        if copy != self._overlay_copy:
+            self._overlay_copy = copy
+            self._overlay_pill.set(copy.pill, copy.tone)
+            self._overlay_headline.configure(text=copy.headline)
+            self._overlay_body.configure(text=copy.body)
+            self._overlay_hint.configure(text=copy.hint)
+            self._overlay_primary.configure(text=copy.primary)
+        try:
+            self._overlay_detail.configure(
+                text=self._fxsound_detail.cget("text"))
+        except tk.TclError:
+            pass
+        if not self._overlay_shown:
+            self._overlay.place(x=0, y=0, relwidth=1, relheight=1)
+            self._overlay.lift()
+            self._overlay_shown = True
+
+    def _overlay_primary_action(self) -> None:
+        """Install FxSound or start it - whichever the overlay is offering."""
+        copy = self._overlay_copy
+        if copy is None:
+            return
+        if copy.primary_action == "install":
+            self._on_install_fxsound()
+        else:
+            self._on_start_fxsound()
+
+    def _overlay_go_settings(self) -> None:
+        if self._on_navigate is not None:
+            self._on_navigate("settings")
+
+    def _overlay_continue_without(self) -> None:
+        """Let the user past the overlay, for this visit to the page.
+
+        The promise the overlay makes is kept: the FxSound-dependent
+        controls stay locked (:meth:`_gate_ui` never unlocks them without
+        the application running). What this reveals is the Hub's own audio
+        processing, which does not need FxSound at all.
+        """
+        self._overlay_dismissed = True
+        self._overlay_shown = False
+        self._overlay.place_forget()
+        self._audio_banner.set(
+            "Showing the Hub's own audio controls. The equalizer, effects "
+            "and presets on this page need FxSound running.", "info")
+        self._gate_ui()
+
+    def _page_controls(self) -> list:
+        """The page's controls that do not need FxSound.
+
+        They stay usable once the user continues past the overlay; while it
+        covers the page they are disabled too, so nothing behind it can be
+        reached with the keyboard.
+        """
+        widgets: list = [self._gain_scale, self._reset_profile_button,
+                         self._output_button, self._auto_output_check,
+                         self._reset_eq_button, self._eq_gain_scale]
+        widgets.extend(self._effect_scales.values())
+        widgets.extend(self._eq_control_scales)
+        return widgets
+
     # ----------------------------------------------------------- equalizer --
 
     def _build_equalizer(self, body) -> None:
@@ -333,8 +601,9 @@ class AudioView(tk.Frame):
         self._eq_pill = StatusPill(top, "Flat", IDLE, bg=PANEL, width=150)
         self._eq_pill.pack(side="right")
 
-        ttk.Button(top, text="Reset EQ", command=self._on_reset_eq
-                   ).pack(side="right", padx=(0, 8))
+        self._reset_eq_button = ttk.Button(top, text="Reset EQ",
+                                           command=self._on_reset_eq)
+        self._reset_eq_button.pack(side="right", padx=(0, 8))
 
         self._eq_graph = EQGraph(body, self._on_band_dragged)
         self._eq_graph.pack(fill="x", pady=(10, 0))
@@ -366,9 +635,10 @@ class AudioView(tk.Frame):
             tk.Label(grid, text=label, bg=PANEL, fg=PAPER, font=font.base,
                      anchor="w").grid(row=row, column=0, sticky="w", pady=3)
             var = tk.DoubleVar(value=0.0)
-            ttk.Scale(grid, from_=low, to=high, variable=var,
-                      command=lambda _v, k=key: self._on_eq_control(k)
-                      ).grid(row=row, column=1, sticky="ew", padx=(12, 8))
+            eq_scale = ttk.Scale(grid, from_=low, to=high, variable=var,
+                                 command=lambda _v, k=key: self._on_eq_control(k))
+            eq_scale.grid(row=row, column=1, sticky="ew", padx=(12, 8))
+            self._eq_control_scales.append(eq_scale)
             readout = tk.Label(grid, text=f"0.0 {unit}", bg=PANEL, fg=MUTED,
                                font=font.code_small, width=9)
             readout.grid(row=row, column=2, sticky="e")
@@ -387,10 +657,12 @@ class AudioView(tk.Frame):
                       sticky="ew", pady=(3, 0))
         tk.Label(gain_row, text="Master gain", bg=PANEL, fg=PAPER,
                  font=font.base, anchor="w").pack(side="left")
-        ttk.Scale(gain_row, from_=-20.0, to=20.0,
-                  variable=self._eq_vars["master_gain_db"],
-                  command=lambda _v: self._on_eq_control("master_gain_db")
-                  ).pack(side="left", fill="x", expand=True, padx=(12, 8))
+        self._eq_gain_scale = ttk.Scale(
+            gain_row, from_=-20.0, to=20.0,
+            variable=self._eq_vars["master_gain_db"],
+            command=lambda _v: self._on_eq_control("master_gain_db"))
+        self._eq_gain_scale.pack(side="left", fill="x", expand=True,
+                                 padx=(12, 8))
         self._eq_gain_label = tk.Label(gain_row, text="0.0 dB", bg=PANEL,
                                        fg=MUTED, font=font.code_small, width=9)
         self._eq_gain_label.pack(side="right")
@@ -483,13 +755,37 @@ class AudioView(tk.Frame):
         self._fx_install_button.configure(
             state="normal" if not found and not self._fx_install_busy
             else "disabled")
+        # The overlay is the surface that carries the FxSound state, so it
+        # is synced here: the two can never disagree about the lock.
+        self._sync_overlay()
+        covered = self._overlay_shown and not self._overlay_dismissed
+        own_state = "disabled" if covered else "normal"
+        for widget in self._page_controls():
+            try:
+                widget.configure(state=own_state)
+            except tk.TclError:
+                pass
+        # The output selector is a read-only combobox: its resting state is
+        # "readonly", not "normal" - "normal" would make it editable.
+        self._output_box.configure(
+            state="disabled" if covered else "readonly")
+        if covered:
+            # Its state is otherwise owned by _render_fxsound (normal only
+            # when FxSound is installed), which is why it is handled here.
+            self._fx_power_check.configure(state="disabled")
+        busy = self._fx_install_busy
+        for button in (self._overlay_primary, self._overlay_download,
+                       self._overlay_check, self._overlay_settings):
+            button.configure(state="disabled" if busy else "normal")
 
-    def _require_fxsound(self, prompt_start: bool = True) -> bool:
-        """Make FxSound usable before a feature runs, or explain why not.
+    def _require_fxsound(self) -> bool:
+        """Whether an FxSound feature may run, or False with the reason shown.
 
-        Installed but stopped: ask the user, then start it and wait.
-        Not installed: point at the download page. Returns whether the caller
-        may proceed.
+        This never prompts. The page's overlay is the surface that offers to
+        start or install the application, and while it is up a control that
+        needs FxSound cannot be reached at all; the banner below covers the
+        paths that stay reachable - the Hub's own controls, and the moment
+        the user has continued past the overlay.
         """
         engine = self._engine_provider()
         if engine is None:
@@ -498,39 +794,14 @@ class AudioView(tk.Frame):
         ready, reason = self._fxsound_ready()
         if ready:
             return True
-        if reason == "stopped" and prompt_start:
-            if tkmessagebox.askyesno(
-                    "Start FxSound",
-                    "FxSound is installed but is not running.\n\n"
-                    "The Hub drives FxSound through its own command line, so "
-                    "the application has to be up for this feature.\n\n"
-                    "Start FxSound now?",
-                    parent=self):
-                return self._start_and_settle()
+        if reason == "stopped":
             self._eq_banner.set(
                 "FxSound is not running, so that feature stayed locked. "
-                "Start FxSound (or press “Start FxSound”) and try again.",
-                "warn")
-            return False
-        if reason == "missing":
-            url = ""
-            try:
-                url = engine.fxsound_download_url()
-            except AttributeError:
-                url = ""
-            if tkmessagebox.showwarning(
-                    "FxSound is not installed",
-                    "FxSound is not installed on this PC, so the Hub cannot "
-                    "drive it.\n\n"
-                    "FxSound is free and open source. Press \u201cInstall "
-                    "FxSound\u201d on this page to install it automatically, "
-                    "or get it from:\n" + url,
-                    parent=self):
-                self._on_open_download_page()
-            else:
-                self._eq_banner.set(
-                    "FxSound is not installed. Install it, then press "
-                    "“Check FxSound status”.", "warn")
+                "Start FxSound from this page and try again.", "warn")
+        else:
+            self._eq_banner.set(
+                "FxSound is not installed, so that feature stayed locked. "
+                "Install it from this page and try again.", "warn")
         return False
 
     def _start_and_settle(self) -> bool:
@@ -574,16 +845,11 @@ class AudioView(tk.Frame):
             source = engine.fxsound_setup_url()
         except AttributeError:
             source = ""
-        if not tkmessagebox.askyesno(
-                "Install FxSound",
-                "Download and install FxSound now?\n\n"
-                "The official setup runs silently and installs into Program "
-                "Files; the only thing it asks for is the standard UAC "
-                "confirmation. When it is done the Hub starts it and loads "
-                "its settings.\n\n"
-                + (f"Source: {source}" if source else ""),
-                parent=self):
-            return
+        # No confirmation dialog: pressing this button (on the overlay or on
+        # the card) is the consent, and the narration below says exactly what
+        # is about to happen. The setup's own UAC prompt is the OS-level
+        # confirmation.
+        log.info("FxSound install requested (source: %s)", source or "unknown")
         self._fx_install_busy = True
         self._gate_ui()
         self._fxsound_detail.configure(text="Downloading FxSound...",
@@ -1482,6 +1748,11 @@ class AudioView(tk.Frame):
         configuration FxSound is running instead of overwriting it with a
         stale profile.
         """
+        if not self._page_open:
+            # A fresh visit: the overlay is re-armed even if the user chose
+            # to continue past it last time.
+            self._page_open = True
+            self._overlay_dismissed = False
         if self._fx_loaded_for_page:
             return
         self._fx_loaded_for_page = True
@@ -1513,6 +1784,13 @@ class AudioView(tk.Frame):
         made inside the application while the user was on another page are
         picked up before the next edit starts.
         """
+        self._page_open = False
+        self._overlay_dismissed = False
+        self._overlay_shown = False
+        try:
+            self._overlay.place_forget()
+        except (AttributeError, tk.TclError):
+            pass
         self._fx_loaded_for_page = False
 
     def refresh(self) -> None:
@@ -1604,6 +1882,10 @@ class AudioView(tk.Frame):
             self._suspend = False
 
     def _render_fxsound(self, status: Any) -> None:
+        if status is not None:
+            # Keep the cache the overlay reads from in step with what is
+            # being rendered, whichever path called this.
+            self._last_fx_status = status
         found = bool(getattr(status, "found", False))
         running = bool(getattr(status, "running", False))
         # The checkbox mirrors the application's power unless our own toggle

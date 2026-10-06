@@ -15,6 +15,7 @@ import sys
 import tempfile
 import traceback
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -105,6 +106,46 @@ def main() -> int:
 
     step("equalizer outputs are listed", lambda: (
         app._audio_view.refresh_outputs(), pump())[0])
+
+    # -- audio page no-access overlay -----------------------------------------
+    def overlay_covers_the_page() -> None:
+        view = app._audio_view
+        view._page_open = True
+        view._overlay_dismissed = False
+        view._render_fxsound(SimpleNamespace(found=False, running=False,
+                                             power=False))
+        pump()
+        assert view._overlay_shown, "the page is not covered"
+        assert view._overlay.winfo_manager() == "place"
+        assert not view._fx_ui_enabled, "FxSound features must stay locked"
+        assert str(view._overlay_primary.cget("text")) == "Install FxSound"
+        assert str(view._gain_scale.cget("state")) == "disabled"
+
+    step("audio page is covered while FxSound is unavailable",
+         overlay_covers_the_page)
+
+    def overlay_proposes_starting_when_installed() -> None:
+        view = app._audio_view
+        view._render_fxsound(SimpleNamespace(found=True, running=False,
+                                             power=False))
+        pump()
+        assert view._overlay_shown, "the page is not covered"
+        assert str(view._overlay_primary.cget("text")) == "Start FxSound"
+
+    step("overlay proposes starting FxSound when it is installed",
+         overlay_proposes_starting_when_installed)
+
+    def overlay_clears_when_running() -> None:
+        view = app._audio_view
+        view._render_fxsound(SimpleNamespace(
+            found=True, running=True, power=True, selected_output="",
+            selected_preset="", effects={}))
+        pump()
+        assert not view._overlay_shown, "the overlay did not clear"
+        assert view._overlay.winfo_manager() == ""
+
+    step("audio page overlay clears when FxSound is running",
+         overlay_clears_when_running)
 
     # -- synthetic device traffic -------------------------------------------
     def push_status(hexstr: str) -> None:

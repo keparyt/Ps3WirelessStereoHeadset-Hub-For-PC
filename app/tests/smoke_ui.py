@@ -147,6 +147,16 @@ def main() -> int:
     step("audio page overlay clears when FxSound is running",
          overlay_clears_when_running)
 
+    def overlay_sends_the_user_to_settings() -> None:
+        view = app._audio_view
+        view._overlay_go_settings()
+        app._drain_ui_requests()
+        assert app._current == "settings", app._current
+        app._select_view("audio")
+        pump()
+
+    step("overlay sends the user to Settings", overlay_sends_the_user_to_settings)
+
     # -- synthetic device traffic -------------------------------------------
     def push_status(hexstr: str) -> None:
         snapshot = parse_status(bytes.fromhex(hexstr))

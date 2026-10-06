@@ -429,7 +429,7 @@ Every non-Windows-only piece must run in CI (`pytest -q`), matching the existing
 - [x] Audio page visited with FxSound **installed but stopped**: the whole page is covered, the primary button is **Start FxSound**.
 - [x] Nothing on the covered page is clickable or keyboard-reachable; the nav rail still works (no `grab_set`).
 - [x] Starting/installing from the overlay lifts it automatically once FxSound answers, and it returns if FxSound stops.
-- [x] `python -m pytest -q` green (282) and `python tests/smoke_ui.py` passes with three new overlay steps.
+- [x] `python -m pytest -q` green (289) and `python tests/smoke_ui.py` passes with three new overlay steps.
 - [ ] One launch with FxSound stopped starts FxSound **and** the Hub (manual test, one click).
 - [ ] Second launch never creates a second process and brings the existing window forward.
 - [ ] Fresh install registers a verified Run entry; sign-in yields a tray-only Hub; uninstall removes it.

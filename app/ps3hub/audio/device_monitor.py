@@ -378,17 +378,27 @@ def _guid_struct(text: str) -> ctypes.Structure:
 class _NotificationClient:
     """Minimal COM object implementing IMMNotificationClient.
 
-    Built with raw vtables: the object's own vtable points at static
-    trampolines we define here. Only the methods the shell actually calls
-    are implemented; everything else returns S_OK.
+    Built with raw vtables: the object is a single qword holding the address
+    of a table of static trampolines we define here. COM dereferences the
+    interface pointer twice (``vtbl = *(void**)this`` then
+    ``call ((void**)vtbl)[index]``), so that extra level is not optional -
+    see :meth:`__init__`. Only the methods the shell actually calls are
+    implemented; everything else returns S_OK.
     """
 
     IID = "{7991EEC9-7E89-4D85-8390-6C703CEC60C0}"
+    #: IUnknown, which every object must answer.
+    IID_UNKNOWN = "{00000000-0000-0000-C000-000000000046}"
+    #: E_NOINTERFACE for anything else. The callback restype is ``c_long``,
+    #: not ``ctypes.HRESULT``, because HRESULT raises on a failing code and
+    #: ctypes would swallow that exception inside the callback and hand
+    #: Windows a bogus S_OK - the opposite of a refusal.
+    E_NOINTERFACE = -2147467262
 
     def __init__(self, forward: Callable[[str], None]) -> None:
         self._forward = forward
         self._ref = 1
-        self._vtable = (c_void_p * 10)()
+        self._vtable = (c_void_p * _NOTIFICATION_VTABLE_SLOTS)()
 
         # Build the vtable: QI, AddRef, Release, then the five notification
         # methods. ctypes callback objects must be kept alive with the
@@ -409,22 +419,52 @@ class _NotificationClient:
             self._cb_state, self._cb_added, self._cb_removed,
             self._cb_default, self._cb_prop, stub, stub,
         ]
-        for index, callback in enumerate(entries):
+        for index in range(_NOTIFICATION_VTABLE_SLOTS):
+            # Spare slots get the S_OK stub rather than a NULL or whatever
+            # happens to sit next in the heap: a call into a slot beyond
+            # IMMNotificationClient's own methods should land on something
+            # harmless, never on uninitialised memory.
+            callback = entries[index] if index < len(entries) else stub
             self._vtable[index] = c_void_p(
                 cast(callback, c_void_p).value
             )
-        self._object = cast(self._vtable, c_void_p)
+        # The interface pointer COM receives has to point at a *pointer to*
+        # the vtable. Handing out the vtable array itself made Windows read
+        # the first trampoline's code address as the vtable and call through
+        # the machine code there: the very first device notification - an
+        # audio endpoint disappearing, which is what closing FxSound does -
+        # executed the two bytes at that address and killed the process with
+        # an execute access violation at 0x0. Nothing in Python can catch
+        # that: no traceback, no panic.log, no shutdown. The layout test in
+        # ``tests/test_device_monitor.py`` pins this contract.
+        self._object_holder = (c_void_p * 1)(cast(self._vtable, c_void_p).value)
+        self._object = cast(self._object_holder, c_void_p)
 
     # -- COM plumbing -------------------------------------------------------
 
     def _s_ok(self, *args: Any) -> int:
         return 0
 
-    def _query(self, this: c_void_p, iid: c_void_p, out: c_void_p) -> int:
-        # Only the exact IID is accepted; everything else is a refusal.
-        if out:
-            cast(out, POINTER(c_void_p)).contents.value = this.value
-            self._ref += 1
+    def _query(self, this: int, iid: int, out: int) -> int:
+        """IUnknown::QueryInterface - only our own IIDs are accepted.
+
+        Answering "yes" to every IID would hand the caller an interface whose
+        vtable has fewer methods than that interface promises, which turns
+        into a call past the end of the table. Refusing is what a correct COM
+        object does, and it is the only answer that cannot be misused.
+
+        ``this``, ``iid`` and ``out`` arrive as raw addresses: ctypes converts
+        ``c_void_p`` callback parameters to plain ``int``, so treating them as
+        ``c_void_p`` holders (``this.value``) would raise inside the callback
+        and leave ``*out`` unwritten while still reporting success.
+        """
+        if not this or not iid or not out:
+            return self.E_NOINTERFACE
+        requested = ctypes.string_at(iid, 16)
+        if requested not in (_IID_UNKNOWN, _IID_NOTIFICATION_CLIENT):
+            return self.E_NOINTERFACE
+        ctypes.cast(out, POINTER(c_void_p))[0] = this
+        self._ref += 1
         return 0
 
     def _addref(self, this: c_void_p) -> int:
@@ -459,13 +499,23 @@ class _NotificationClient:
         return 0
 
 
-_ProtoNotification = _WINFUNCTYPE(_HRESULT, c_void_p, c_void_p, c_void_p)
-_ProtoDeviceEvent = _WINFUNCTYPE(_HRESULT, c_void_p, c_wchar_p)
-_ProtoDeviceState = _WINFUNCTYPE(_HRESULT, c_void_p, c_wchar_p, c_ulong)
-_ProtoDefaultChanged = _WINFUNCTYPE(_HRESULT, c_void_p, c_ulong, c_ulong, c_wchar_p)
-_ProtoPropChanged = _WINFUNCTYPE(_HRESULT, c_void_p, c_wchar_p, c_void_p)
+#: IUnknown + the five IMMNotificationClient methods, plus spare slots.
+_NOTIFICATION_VTABLE_SLOTS = 12
 
-_RegisterProto = _WINFUNCTYPE(_HRESULT, c_void_p, c_void_p)
+_IID_UNKNOWN = _com_guid(_NotificationClient.IID_UNKNOWN)
+_IID_NOTIFICATION_CLIENT = _com_guid(_NotificationClient.IID)
+
+#: These protoypes describe callbacks *we* implement, so their restype must
+#: be ``c_long`` (see ``_HRES``): ``ctypes.HRESULT`` raises on a failing code,
+#: and an exception raised inside a callback is printed and swallowed by
+#: ctypes, returning 0 to the caller - a false S_OK.
+_ProtoNotification = _WINFUNCTYPE(_HRES, c_void_p, c_void_p, c_void_p)
+_ProtoDeviceEvent = _WINFUNCTYPE(_HRES, c_void_p, c_wchar_p)
+_ProtoDeviceState = _WINFUNCTYPE(_HRES, c_void_p, c_wchar_p, c_ulong)
+_ProtoDefaultChanged = _WINFUNCTYPE(_HRES, c_void_p, c_ulong, c_ulong, c_wchar_p)
+_ProtoPropChanged = _WINFUNCTYPE(_HRES, c_void_p, c_wchar_p, c_void_p)
+
+_RegisterProto = _WINFUNCTYPE(_HRES, c_void_p, c_void_p)
 
 
 def register_device_notifications(callback: Callable[[str], None]) -> Callable[[], None] | None:

@@ -394,7 +394,7 @@ The exact collections and usage pages should not be assumed to be identical acro
 │   │   ├── tray.py           battery-coloured headset tray icon
 │   │   ├── audio/            loopback DSP + FxSound CLI integration
 │   │   └── ui/               black-gold interface, toasts, equalizer
-│   └── tests/                282 unit tests + a full UI smoke test
+│   └── tests/                289 unit tests + a full UI smoke test
 │
 ├── poc/
 │   ├── ps3_headset_panel.py

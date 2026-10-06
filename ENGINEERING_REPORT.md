@@ -80,6 +80,15 @@ apps → Windows mixer → [IAudioClient LOOPBACK capture, default endpoint]
 device_monitor: IMMDeviceEnumerator + IMMNotificationClient (raw-vtable
 COM) — endpoint list, default-device changes, push notifications.
 
+Traps found here so far (both fixed in 1.2.16, both pinned by tests in
+`tests/test_device_monitor.py`): the COM interface pointer must point at a
+*pointer to* the vtable (handing out the table itself makes Windows read a
+trampoline's machine code as a table and execute it — an uncatchable crash at
+0x0 the moment a device notification arrives, e.g. FxSound closing); and the
+callbacks' restype must be `c_long`, not `ctypes.HRESULT`, because HRESULT
+raises on a failing code and ctypes swallows exceptions raised inside a
+callback, reporting S_OK for a refusal.
+
 Backends: "native" (the pipeline above) or "fxsound" (drive an installed
 FxSound via CLI instead; loopback engine stays idle).
 ```

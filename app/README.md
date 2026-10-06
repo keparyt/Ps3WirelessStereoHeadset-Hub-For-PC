@@ -11,6 +11,29 @@ equalizer.
 
 ![Dashboard](docs/dashboard.png)
 
+## What is new in 1.2.16
+
+* **Closing FxSound no longer takes the Hub down with it.** The Hub could
+  simply vanish when FxSound was closed: no error message, no log line, no
+  shutdown - Windows only recorded an access violation at address `0x0`. The
+  cause was the COM notification object the Hub registers to hear about
+  audio-device changes: it handed Windows a pointer to its own function table
+  instead of a pointer to a pointer to it. Windows dereferenced that, read the
+  first table entry's *machine code* as the table, and jumped to it, so the
+  first device notification arriving after FxSound went away executed data.
+  The pointer is now built to the contract the ABI requires; nothing in Python
+  can catch that class of fault, which is why it looked like a mysterious
+  exit.
+* **The notification object now answers `QueryInterface` honestly.** It used to
+  accept any interface ID it was asked for, and for one it did not implement it
+  failed in a way that *reported success* to Windows, handing back an interface
+  whose table was too short. It now accepts `IUnknown` and
+  `IMMNotificationClient` and refuses everything else with `E_NOINTERFACE`.
+* **Tests pin the layout.** `app/tests/test_device_monitor.py` reads the object
+  back the way Windows does - through the interface pointer, then through the
+  table - asserts every slot is callable, and calls the device-removed slot
+  itself, so a regression fails a test instead of killing the process.
+
 ## What is new in 1.2.15
 
 * **The Audio page cannot be used halfway any more.** While FxSound is

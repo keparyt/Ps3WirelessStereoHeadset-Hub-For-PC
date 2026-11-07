@@ -5,7 +5,7 @@
 ![Platform](https://img.shields.io/badge/platform-Windows-blue)
 ![Language](https://img.shields.io/badge/language-Python-yellow)
 ![Status](https://img.shields.io/badge/status-Active%20R%26D-orange)
-![Protocol](https://img.shields.io/badge/HID-12BA%3A0035-purple)
+![Protocol](https://img.shields.io/badge/HID-12BA%3A0030%2F0035-purple)
 
 
 <img src="./GitAssets/Screenshot-main.png" width="100%" alt="Main Menu Screenshot Preview"/>
@@ -47,7 +47,7 @@ The project currently concentrates on the receiver's HID interface:
 ┌───────────────────────────┐
 │ Sony USB Wireless         │
 │ Receiver                  │
-│ VID 12BA / PID 0035       │
+│ VID 12BA / PID 0030/0035  │
 └─────────────┬─────────────┘
               │ USB HID
               ▼
@@ -371,7 +371,7 @@ Known receiver:
 
 ```
 Vendor ID:     0x12BA
-Product ID:    0x0035
+Product IDs:   0x0030 (CECHYA-0080) / 0x0035 (CUHYA-0080)
 Manufacturer:  Sony Interactive Entertainment
 ```
 

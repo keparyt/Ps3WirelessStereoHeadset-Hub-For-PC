@@ -13,7 +13,7 @@ from tkinter import ttk
 from .. import APP_NAME, APP_VERSION
 from ..applog import log_dir, log_files, recent
 from ..device import HeadsetService, ServiceState
-from ..protocol import TARGET_PID, TARGET_VID
+from ..protocol import TARGET_PID_LABEL, TARGET_VID
 from .theme import (
     ABYSS, DECK, FAINT, FAULT, GOLD, LIVE, MUTED, PANEL, PAPER, RIDGE, WARN, fonts,
 )
@@ -47,7 +47,7 @@ class DiagnosticsView(tk.Frame):
         counters.grid(row=0, column=0, sticky="nsew", padx=(0, 12), pady=(0, 12))
         self._kv = {
             "target": KeyValue(counters.body, "Target device",
-                               f"VID 0x{TARGET_VID:04X} / PID 0x{TARGET_PID:04X}"),
+                               f"VID 0x{TARGET_VID:04X} / PID {TARGET_PID_LABEL}"),
             "backend": KeyValue(counters.body, "HID backend", "checking"),
             "receiver": KeyValue(counters.body, "Receiver", "not detected"),
             "readers": KeyValue(counters.body, "Open collections", "0"),

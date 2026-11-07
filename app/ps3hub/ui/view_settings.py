@@ -15,8 +15,8 @@ from .. import APP_NAME, APP_VERSION
 from ..config import Settings, config_path
 from ..updates import RELEASES_PAGE
 from ..protocol import (
-    TARGET_ADAPTER_MODEL, TARGET_HEADSET_MARKING, TARGET_HEADSET_MODEL,
-    TARGET_PID, TARGET_VID,
+    SUPPORTED_ADAPTER_MODELS, SUPPORTED_HEADSET_MODELS, TARGET_PID_LABEL,
+    TARGET_VID,
 )
 from .theme import ABYSS, FAINT, GOLD, MUTED, PANEL, PAPER, fonts
 from .widgets import Banner, Card, ScrollFrame
@@ -143,9 +143,9 @@ class SettingsView(tk.Frame):
         device = Card(root, "Device")
         device.grid(row=1, column=0, sticky="nsew", padx=(0, 12), pady=(0, 12))
         for label, value in (
-            ("Headset", f"{TARGET_HEADSET_MODEL} {TARGET_HEADSET_MARKING}"),
-            ("Wireless adapter", TARGET_ADAPTER_MODEL),
-            ("USB identity", f"VID 0x{TARGET_VID:04X} / PID 0x{TARGET_PID:04X}"),
+            ("Supported headsets", SUPPORTED_HEADSET_MODELS),
+            ("Supported adapters", SUPPORTED_ADAPTER_MODELS),
+            ("USB identity", f"VID 0x{TARGET_VID:04X} / PID {TARGET_PID_LABEL}"),
             ("Volume steps", "10 discrete hardware levels, shown as a percentage"),
         ):
             row = tk.Frame(device.body, bg=PANEL)

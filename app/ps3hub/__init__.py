@@ -1,7 +1,8 @@
 """PS3 Wireless Stereo Headset Hub for Windows.
 
 A production application for the Sony PlayStation Gold Wireless Stereo Headset
-(CUHYA-0080) and its CUHYA-0081 USB receiver (VID 0x12BA / PID 0x0035).
+(CECHYA-0080/CUHYA-0080) and their USB receivers
+(VID 0x12BA / PID 0x0030 or 0x0035).
 
 Layering (no module imports the one above it):
 

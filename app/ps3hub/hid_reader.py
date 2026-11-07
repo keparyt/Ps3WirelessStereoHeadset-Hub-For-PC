@@ -1,4 +1,4 @@
-"""Windows receive-only HID reader for Sony 12BA:0035.
+"""Windows receive-only HID reader for supported Sony 12BA headset receivers.
 
 This is the native diagnostic transport retained from the proof of concept.
 The application prefers the hidapi interrupt-IN path because it matches the

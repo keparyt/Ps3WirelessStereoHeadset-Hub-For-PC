@@ -1,8 +1,24 @@
 """Protocol decoding, including the cases the proof of concept already covered."""
 
 from ps3hub.protocol import (
-    HeadsetSnapshot, decode_b0, normalize_report, parse_status, volume_to_percent,
+    HeadsetSnapshot, TARGET_PIDS, decode_b0, normalize_report, parse_status,
+    volume_to_percent,
 )
+
+
+def test_original_ps3_receiver_is_supported():
+    assert 0x0030 in TARGET_PIDS
+
+
+def test_cechya_0080_live_capture_decodes_without_assuming_newer_constant():
+    decoded = decode_b0(bytes.fromhex("B0 05 64 57 EF 36 19 00"))
+    assert decoded is not None
+    assert decoded["battery_percent"] == 0x57
+    assert decoded["vss"] is True
+    assert decoded["mic_muted"] is True
+    assert decoded["headset_connected"] is True
+    assert decoded["byte5_unknown"] == 0x36
+    assert decoded["byte6_observed_constant"] == 0x19
 
 
 def test_b0_gold_status():

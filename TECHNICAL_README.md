@@ -79,7 +79,7 @@ The primary known receiver is:
 | Property | Value |
 |---|---|
 | Vendor ID | `0x12BA` |
-| Product ID | `0x0035` |
+| Product IDs | `0x0030` (CECHYA-0080), `0x0035` (CUHYA-0080) |
 | Manufacturer | Sony Interactive Entertainment |
 | Transport | USB |
 | Device class of interest | HID |
@@ -97,7 +97,8 @@ The PoC uses HID enumeration to discover all collections belonging to the target
 Conceptually:
 
 ```
-hid.enumerate(0x12BA, 0x0035)
+for product_id in (0x0030, 0x0035):
+    hid.enumerate(0x12BA, product_id)
              │
              ▼
        collection list
@@ -687,7 +688,7 @@ GetRawInputDeviceInfoW()
    ▼
 VID/PID
    │
-   ├── 12BA:0035 → process
+   ├── 12BA:0030/0035 → process
    │
    └── other → ignore
 ```
@@ -1114,6 +1115,7 @@ A compatibility matrix should eventually look like:
 
 | Hardware | Receiver | B0 | Telemetry | Output | Notes |
 |---|---|---|---|---|---|
+| CECHYA-0080 | 12BA:0030 | ✅ | ✅ | ? | Live Windows capture; byte 6 is `0x19` |
 | Headset A | 12BA:0035 | ✅ | ✅ | ? | Reference |
 | Headset B | 12BA:0035 | ? | ? | ? | To test |
 | Headset C | ? | ? | ? | ? | To test |

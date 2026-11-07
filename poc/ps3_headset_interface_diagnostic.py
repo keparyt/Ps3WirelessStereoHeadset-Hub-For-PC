@@ -102,7 +102,9 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=Path("captures"), help="Capture directory")
     args = parser.parse_args()
 
-    devices = [serializable(item) for item in hid.enumerate() if matches(item, args.vid, args.pid)]
+    # Keep hidapi's native byte path for open_path().  Converting it to text is
+    # useful for JSON/logging, but hidapi 0.15 on Windows rejects a str path.
+    devices = [dict(item) for item in hid.enumerate() if matches(item, args.vid, args.pid)]
     devices.sort(key=lambda item: (int(item.get("vendor_id") or 0), int(item.get("product_id") or 0), int(item.get("usage_page") or 0), int(item.get("usage") or 0), item.get("path", "")))
 
     print(f"Found {len(devices)} matching HID collections")
@@ -121,7 +123,10 @@ def main() -> int:
 
     session = args.output / datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     session.mkdir(parents=True, exist_ok=True)
-    (session / "devices.json").write_text(json.dumps(devices, indent=2), encoding="utf-8")
+    (session / "devices.json").write_text(
+        json.dumps([serializable(item) for item in devices], indent=2),
+        encoding="utf-8",
+    )
     capture_path = session / "capture.jsonl"
     capture_path.touch()
     print(f"\nCapture directory: {session}")

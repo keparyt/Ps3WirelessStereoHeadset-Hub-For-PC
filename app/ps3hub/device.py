@@ -47,7 +47,8 @@ from .hid_reader import (
 )
 from .inputs import EdgeDetector, InputEvent
 from .protocol import (
-    TARGET_PID,
+    TARGET_PIDS,
+    TARGET_PID_PRIORITY,
     TARGET_VID,
     HeadsetSnapshot,
     ReportFingerprint,
@@ -290,7 +291,11 @@ class HeadsetService:
             target=self._scan_loop, name="hid-scanner", daemon=True
         )
         self._scanner.start()
-        log.info("Headset service started (target %04X:%04X)", TARGET_VID, TARGET_PID)
+        log.info(
+            "Headset service started (target %04X, PIDs %s)",
+            TARGET_VID,
+            ", ".join(f"{pid:04X}" for pid in TARGET_PIDS),
+        )
 
     def request_scan(self) -> None:
         """Request an immediate device enumeration from the scanner thread."""
@@ -319,7 +324,14 @@ class HeadsetService:
         if hid is None:
             return []
         try:
-            return list(hid.enumerate(TARGET_VID, TARGET_PID))
+            # One HeadsetService has one EdgeDetector/HeadsetStateTracker.
+            # Never combine reports from two receiver generations into that
+            # shared state: select the first attached generation by priority.
+            for product_id in TARGET_PID_PRIORITY:
+                devices = list(hid.enumerate(TARGET_VID, product_id))
+                if devices:
+                    return devices
+            return []
         except Exception as exc:
             log.error("hid.enumerate failed: %s", exc)
             with self._lock:

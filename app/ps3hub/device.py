@@ -48,6 +48,7 @@ from .hid_reader import (
 from .inputs import EdgeDetector, InputEvent
 from .protocol import (
     TARGET_PIDS,
+    TARGET_PID_PRIORITY,
     TARGET_VID,
     HeadsetSnapshot,
     ReportFingerprint,
@@ -323,10 +324,14 @@ class HeadsetService:
         if hid is None:
             return []
         try:
-            devices: list[dict[str, Any]] = []
-            for product_id in TARGET_PIDS:
-                devices.extend(hid.enumerate(TARGET_VID, product_id))
-            return devices
+            # One HeadsetService has one EdgeDetector/HeadsetStateTracker.
+            # Never combine reports from two receiver generations into that
+            # shared state: select the first attached generation by priority.
+            for product_id in TARGET_PID_PRIORITY:
+                devices = list(hid.enumerate(TARGET_VID, product_id))
+                if devices:
+                    return devices
+            return []
         except Exception as exc:
             log.error("hid.enumerate failed: %s", exc)
             with self._lock:

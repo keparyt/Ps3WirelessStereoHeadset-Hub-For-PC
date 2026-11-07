@@ -27,6 +27,9 @@ from typing import Any
 TARGET_VID = 0x12BA
 TARGET_PID = 0x0035
 TARGET_PIDS = (0x0030, 0x0035)
+# The service owns one state tracker, so it must read one receiver generation
+# at a time. Prefer the historically supported receiver when both are present.
+TARGET_PID_PRIORITY = (0x0035, 0x0030)
 TARGET_PID_LABEL = "/".join(f"0x{pid:04X}" for pid in TARGET_PIDS)
 SUPPORTED_HEADSET_MODELS = "CECHYA-0080 / CUHYA-0080"
 SUPPORTED_ADAPTER_MODELS = "CECHYA-0081 / CUHYA-0081"

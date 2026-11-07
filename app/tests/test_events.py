@@ -1,9 +1,45 @@
 """Event bus: change-only publication from the device service and delivery."""
 
+from ps3hub import device as device_module
 from ps3hub.device import HeadsetService
 from ps3hub.events import AppEvent, EventBus, Event
 from ps3hub.protocol import parse_status
 from ps3hub.state import HeadsetStateTracker
+
+
+class _FakeHid:
+    def __init__(self, devices_by_pid):
+        self.devices_by_pid = devices_by_pid
+        self.calls = []
+
+    def enumerate(self, vendor_id, product_id):
+        self.calls.append((vendor_id, product_id))
+        return self.devices_by_pid.get(product_id, [])
+
+
+def test_enumeration_does_not_mix_receiver_generations(monkeypatch):
+    fake = _FakeHid({
+        0x0035: [{"product_id": 0x0035, "path": b"newer"}],
+        0x0030: [{"product_id": 0x0030, "path": b"original"}],
+    })
+    monkeypatch.setattr(device_module, "hid", fake)
+
+    assert HeadsetService()._enumerate() == [
+        {"product_id": 0x0035, "path": b"newer"}
+    ]
+    assert fake.calls == [(0x12BA, 0x0035)]
+
+
+def test_enumeration_falls_back_to_original_receiver(monkeypatch):
+    fake = _FakeHid({
+        0x0030: [{"product_id": 0x0030, "path": b"original"}],
+    })
+    monkeypatch.setattr(device_module, "hid", fake)
+
+    assert HeadsetService()._enumerate() == [
+        {"product_id": 0x0030, "path": b"original"}
+    ]
+    assert fake.calls == [(0x12BA, 0x0035), (0x12BA, 0x0030)]
 
 
 def test_bus_delivers_to_typed_and_catch_all_subscribers():
